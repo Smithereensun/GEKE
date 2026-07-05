@@ -9,7 +9,7 @@ app.innerHTML = pageShell(
       <div class="section-head">
         <p class="eyebrow">Release Notes</p>
         <h1>${product.nameCn} ${product.nameEn} 更新日志</h1>
-        <p>记录测试版站点与后续 Mac App 方向的公开迭代。当前页面先承接版本说明，后续可与 GitHub Releases 同步。</p>
+        <p>记录测试版站点与当前 Electron Mac App 的公开迭代。当前页面先承接版本说明，后续可与 GitHub Releases 同步。</p>
       </div>
       <div class="timeline-layout">
         <aside class="timeline-nav">

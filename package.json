@@ -1,14 +1,45 @@
 {
   "name": "geke-site",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "GEKE macOS preview app built with Vite and Electron.",
+  "author": "Smithereensun",
   "private": true,
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 4173"
+    "preview": "vite preview",
+    "app:dev": "NODE_ENV=development concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "electron:dev": "npm run app:dev",
+    "app:build": "npm run build && electron-builder",
+    "dist:mac": "npm run app:build"
   },
   "devDependencies": {
-    "vite": "^7.1.1"
+    "concurrently": "^9.2.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.1.1",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "com.smithereensun.geke",
+    "productName": "极刻 GEKE",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir",
+        "zip"
+      ],
+      "artifactName": "GEKE-${version}-${arch}.${ext}"
+    }
   }
 }

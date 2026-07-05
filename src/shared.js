@@ -16,7 +16,7 @@ export function pageShell(content, active = "home") {
       </header>
       ${content}
       <footer class="footer">
-        <div>GEKE / 极刻 Mac 测试版站点</div>
+        <div>GEKE / 极刻 Mac App 测试版</div>
         <div class="footer-links">
           <a href="/">产品页</a>
           <a href="/changelog/">版本日志</a>

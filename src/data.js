@@ -3,7 +3,7 @@ export const product = {
   nameEn: "GEKE",
   tagline: "把 Mac 上最常用的那几件事，压缩到一瞬间。",
   subtitle:
-    "一个面向中文效率流的 Mac 工作台测试版。启动器、截图标注、剪贴板、翻译与快捷操作，先在网页里做出完整产品表达。",
+    "一个面向中文效率流的 Mac 工作台测试版。当前已经可以作为本地 macOS App 运行，界面继续沿用这套 Web 工作台。",
 };
 
 export const metrics = [
@@ -54,6 +54,18 @@ export const features = [
 
 export const changelog = [
   {
+    version: "0.2.0",
+    date: "2026-07-06",
+    build: "test.004",
+    label: "Electron Preview",
+    summary: "把现有 GEKE Web UI 包装成可在 macOS 本地启动和打包的 Electron App 测试版。",
+    bullets: [
+      "新增 Electron 主进程与本地静态资源服务，可直接打开首页、更新日志和原型页。",
+      "补齐 Vite 多页构建配置，确保 changelog 与 prototype 一并进入生产包。",
+      "增加 app:dev、electron:dev、app:build 与 dist:mac 脚本，支持本地启动和 macOS 打包。",
+    ],
+  },
+  {
     version: "0.1.0",
     date: "2026-07-06",
     build: "test.001",
@@ -94,5 +106,5 @@ export const changelog = [
 export const proofPoints = [
   "参考了 `https://fg.vkr.me/mac` 的单页产品表达与 `https://fg.vkr.me/mac/changelog/` 的独立日志思路。",
   "参考了 `/Users/chen/Desktop/1` 中关于启动器、截图标注、OCR 翻译、钉图与最近选区的中文功能描述。",
-  "当前目录原本为空且不是 git 仓库，本次从零初始化并构建可运行测试版。",
+  "现有项目已扩展为可本地启动的 macOS App 测试版，后续可继续接原生能力与下载分发。",
 ];

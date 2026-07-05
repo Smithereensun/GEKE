@@ -14,14 +14,14 @@ app.innerHTML = pageShell(
         <div class="hero-actions">
           <a class="button primary" href="/prototype/">查看原型图</a>
           <a class="button secondary" href="/changelog/">查看更新日志</a>
-          <a class="button secondary" href="https://github.com" target="_blank" rel="noreferrer">GitHub 发布占位</a>
+          <a class="button secondary" href="https://github.com/Smithereensun/GEKE" target="_blank" rel="noreferrer">GitHub 仓库</a>
         </div>
         <div class="hero-notes">
           <div class="hero-note">
             <span class="note-index">01</span>
             <div>
-              <strong>先做能看的测试版</strong>
-              <p class="muted">这不是空白品牌页，而是可运行、可构建、可继续叠代的多页静态站版本。</p>
+              <strong>先做能运行的测试版</strong>
+              <p class="muted">这不是空白品牌页，而是已经可以在 macOS 上本地启动、可构建、可继续叠代的 Electron 测试版。</p>
             </div>
           </div>
           <div class="hero-note">
@@ -156,7 +156,7 @@ app.innerHTML = pageShell(
       <div class="section-head">
         <p class="eyebrow">Recent Releases</p>
         <h2>更新日志先独立出来，方便持续发测试版。</h2>
-        <p>现在先写入 3 个测试版条目，后续可以直接挂 GitHub Releases 或下载地址。</p>
+        <p>当前已加入 Electron 封装版本记录，后续可以继续挂 GitHub Releases、下载地址和原生能力迭代。</p>
       </div>
       <div class="release-grid">
         ${releaseCards(3)}
