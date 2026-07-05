@@ -1,0 +1,94 @@
+<svg width="1600" height="1020" viewBox="0 0 1600 1020" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="170" y1="84" x2="1406" y2="1015" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F2EA"/>
+      <stop offset="1" stop-color="#E7DDD0"/>
+    </linearGradient>
+    <linearGradient id="window" x1="250" y1="175" x2="1336" y2="872" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#231D19"/>
+      <stop offset="1" stop-color="#13100E"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F5BB52"/>
+      <stop offset="1" stop-color="#DE6B39"/>
+    </linearGradient>
+    <filter id="shadow" x="195" y="128" width="1210" height="781" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="28"/>
+      <feGaussianBlur stdDeviation="26"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.105882 0 0 0 0 0.0784314 0 0 0 0 0.054902 0 0 0 0.22 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_14_202"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_14_202" result="shape"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="1020" rx="0" fill="url(#bg)"/>
+  <circle cx="1368" cy="164" r="150" fill="#E7A44A" fill-opacity="0.18"/>
+  <circle cx="259" cy="113" r="118" fill="#FFFFFF" fill-opacity="0.72"/>
+  <g filter="url(#shadow)">
+    <rect x="247" y="152" width="1106" height="677" rx="34" fill="url(#window)"/>
+    <rect x="247.75" y="152.75" width="1104.5" height="675.5" rx="33.25" stroke="white" stroke-opacity="0.08" stroke-width="1.5"/>
+  </g>
+  <rect x="247" y="152" width="1106" height="58" rx="34" fill="#1A1613"/>
+  <rect x="247" y="184" width="1106" height="645" rx="0" fill="#14110F"/>
+  <circle cx="289" cy="181" r="6.5" fill="#F17855"/>
+  <circle cx="311" cy="181" r="6.5" fill="#E4B23F"/>
+  <circle cx="333" cy="181" r="6.5" fill="#5AC06B"/>
+  <text x="785" y="187" text-anchor="middle" fill="#B8ACA0" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18" font-weight="600">GEKE Workspace Preview</text>
+  <text x="1258" y="187" fill="#82756A" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15" font-weight="600">test.001</text>
+  <rect x="307" y="242" width="464" height="276" rx="26" fill="#F9F4ED"/>
+  <rect x="327" y="264" width="424" height="54" rx="18" fill="#FFFCF7"/>
+  <text x="353" y="298" fill="#3E332D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18" font-weight="700">⌘K</text>
+  <text x="417" y="298" fill="#6D6359" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18">搜索动作、应用、历史片段与翻译…</text>
+  <rect x="327" y="337" width="424" height="56" rx="18" fill="#FFFDFC"/>
+  <rect x="340" y="350" width="46" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="363" y="371" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15" font-weight="700">A</text>
+  <text x="404" y="360" fill="#231D19" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18" font-weight="700">截图并标注</text>
+  <text x="404" y="382" fill="#6D6359" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15">回到最近选区，继续上次结构化标注</text>
+  <rect x="673" y="350" width="64" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="705" y="371" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13" font-weight="700">Ctrl A</text>
+  <rect x="327" y="404" width="424" height="56" rx="18" fill="#FFFDFC"/>
+  <rect x="340" y="417" width="46" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="363" y="438" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15" font-weight="700">W</text>
+  <text x="404" y="427" fill="#231D19" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18" font-weight="700">打开微信</text>
+  <text x="404" y="449" fill="#6D6359" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15">应用启动器入口示例</text>
+  <rect x="673" y="417" width="64" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="705" y="438" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13" font-weight="700">Ctrl W</text>
+  <rect x="327" y="471" width="424" height="56" rx="18" fill="#FFFDFC"/>
+  <rect x="340" y="484" width="46" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="363" y="505" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15" font-weight="700">R</text>
+  <text x="404" y="494" fill="#231D19" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18" font-weight="700">OCR / 翻译工作台</text>
+  <text x="404" y="516" fill="#6D6359" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="15">识字、翻译、复制与双向编辑</text>
+  <rect x="673" y="484" width="64" height="30" rx="10" fill="#EEE4D7"/>
+  <text x="705" y="505" text-anchor="middle" fill="#4A4039" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13" font-weight="700">Ctrl U</text>
+  <rect x="977" y="270" width="268" height="223" rx="20" fill="#181412"/>
+  <rect x="977.75" y="270.75" width="266.5" height="221.5" rx="19.25" stroke="white" stroke-opacity="0.08" stroke-width="1.5"/>
+  <rect x="997" y="292" width="112" height="28" rx="14" fill="#3E1F17"/>
+  <text x="1053" y="311" text-anchor="middle" fill="#FFC8B2" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="14" font-weight="700">Capture Flow</text>
+  <text x="1000" y="350" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16">备注 / 步骤 / 箭头</text>
+  <text x="1180" y="350" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16" font-weight="700">一键标注</text>
+  <text x="1000" y="388" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16">主题色切换</text>
+  <text x="1189" y="388" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16" font-weight="700">Option</text>
+  <text x="1000" y="426" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16">最近选区回放</text>
+  <text x="1212" y="426" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16" font-weight="700">5 次</text>
+  <text x="1000" y="464" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16">OCR / 翻译 / 钉图</text>
+  <text x="1182" y="464" fill="#F8F0E8" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="16" font-weight="700">同一面板</text>
+  <rect x="308" y="585" width="937" height="178" rx="24" fill="#F6EFE5"/>
+  <text x="338" y="624" fill="#9C641F" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="14" font-weight="800" letter-spacing="2">WORKFLOW SURFACE</text>
+  <text x="338" y="662" fill="#19130F" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="34" font-weight="800">把启动、截图、翻译与剪贴板压缩到一个工作台里</text>
+  <text x="338" y="701" fill="#6D6359" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="19">优先解决中文用户最常用的路径：启动应用、继续标注、OCR 翻译、回看剪贴板、钉图对比。</text>
+  <rect x="339" y="723" width="136" height="26" rx="13" fill="#FFF8EF"/>
+  <text x="407" y="741" text-anchor="middle" fill="#4D433D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13">应用启动</text>
+  <rect x="487" y="723" width="136" height="26" rx="13" fill="#FFF8EF"/>
+  <text x="555" y="741" text-anchor="middle" fill="#4D433D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13">截图标注</text>
+  <rect x="635" y="723" width="136" height="26" rx="13" fill="#FFF8EF"/>
+  <text x="703" y="741" text-anchor="middle" fill="#4D433D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13">OCR 翻译</text>
+  <rect x="783" y="723" width="136" height="26" rx="13" fill="#FFF8EF"/>
+  <text x="851" y="741" text-anchor="middle" fill="#4D433D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13">剪贴板</text>
+  <rect x="931" y="723" width="136" height="26" rx="13" fill="#FFF8EF"/>
+  <text x="999" y="741" text-anchor="middle" fill="#4D433D" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="13">钉图</text>
+  <rect x="1192" y="85" width="216" height="104" rx="26" fill="#15110F"/>
+  <text x="1222" y="124" fill="#FFF8EF" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="28" font-weight="800">极刻</text>
+  <text x="1222" y="153" fill="#B7AAA0" font-family="Avenir Next, IBM Plex Sans, PingFang SC, sans-serif" font-size="18">GEKE for Mac Preview</text>
+  <rect x="1222" y="173" width="122" height="8" rx="4" fill="url(#accent)"/>
+</svg>
