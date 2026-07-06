@@ -19,6 +19,7 @@ export default defineConfig({
         main: path.resolve(__dirname, "index.html"),
         changelog: path.resolve(__dirname, "changelog/index.html"),
         prototype: path.resolve(__dirname, "prototype/index.html"),
+        about: path.resolve(__dirname, "about/index.html"),
       },
     },
   },

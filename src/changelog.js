@@ -5,11 +5,11 @@ const app = document.querySelector("#app");
 
 app.innerHTML = pageShell(
   `
-    <section class="section">
+    <section class="section page-panel">
       <div class="section-head">
         <p class="eyebrow">Release Notes</p>
         <h1>${product.nameCn} ${product.nameEn} 更新日志</h1>
-        <p>记录测试版站点与当前 Electron Mac App 的公开迭代。当前页面先承接版本说明，后续可与 GitHub Releases 同步。</p>
+        <p>这里只保留公开版本说明。真正的主入口已经切到工作台，更新日志只承担迭代记录与验收痕迹。</p>
       </div>
       <div class="timeline-layout">
         <aside class="timeline-nav">

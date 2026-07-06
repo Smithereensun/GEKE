@@ -1,6 +1,6 @@
 import { changelog, product } from "./data.js";
 
-export function pageShell(content, active = "home") {
+export function pageShell(content, active = "workspace") {
   return `
     <div class="site-shell">
       <header class="topbar">
@@ -9,18 +9,20 @@ export function pageShell(content, active = "home") {
           <span>${product.nameCn} ${product.nameEn}</span>
         </a>
         <nav class="nav">
-          <a href="/" class="${active === "home" ? "active" : ""}">首页</a>
+          <a href="/" class="${active === "workspace" ? "active" : ""}">工作台</a>
           <a href="/changelog/" class="${active === "changelog" ? "active" : ""}">更新日志</a>
           <a href="/prototype/" class="${active === "prototype" ? "active" : ""}">原型图</a>
+          <a href="/about/" class="${active === "about" ? "active" : ""}">关于</a>
         </nav>
       </header>
       ${content}
       <footer class="footer">
-        <div>GEKE / 极刻 Mac App 测试版</div>
+        <div>GEKE / 极刻 macOS MVP</div>
         <div class="footer-links">
-          <a href="/">产品页</a>
+          <a href="/">工作台</a>
           <a href="/changelog/">版本日志</a>
           <a href="/prototype/">原型图</a>
+          <a href="/about/">关于</a>
         </div>
       </footer>
     </div>

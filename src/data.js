@@ -1,58 +1,63 @@
 export const product = {
   nameCn: "极刻",
   nameEn: "GEKE",
-  tagline: "把 Mac 上最常用的那几件事，压缩到一瞬间。",
+  tagline: "把常用动作压缩进一个真正能工作的 macOS 面板。",
   subtitle:
-    "一个面向中文效率流的 Mac 工作台测试版。当前已经可以作为本地 macOS App 运行，界面继续沿用这套 Web 工作台。",
+    "GEKE 现在以工具工作台作为主入口，围绕快速捕捉、Markdown 草稿、剪贴板历史、搜索筛选、菜单栏和快捷面板组织主流程。",
+  repoUrl: "https://github.com/Smithereensun/GEKE",
 };
 
-export const metrics = [
-  { value: "38", label: "可自定义快捷入口" },
-  { value: "1s", label: "回到上次选区与标注" },
-  { value: "5", label: "核心高频工作流" },
-  { value: "Local", label: "以本地优先为设计原则" },
+export const fuguangSummary = [
+  {
+    title: "菜单栏常驻应用",
+    body:
+      "本地 `/Applications/浮光.app` 的 `Info.plist` 标明 `LSUIElement = 1`，说明它以常驻菜单栏工具而不是传统 Dock 应用为主。",
+  },
+  {
+    title: "主面板 + 快速面板",
+    body:
+      "二进制符号里明确出现 `MainPanel`、`FloatingPanel`、`PanelShortcut`、`momentaryPanelEnabled` 等结构，核心交互是随时唤起的主面板和浮动面板。",
+  },
+  {
+    title: "剪贴板与截图工作流",
+    body:
+      "可见符号包含 `ClipboardHistoryService`、`ScreenshotPinnedImage`、`ScreenshotAnnotationHistory`、`screenshotOCR`、`screenshotTranslate`，说明它把剪贴板和截图后续处理放在同一工作流内。",
+  },
+  {
+    title: "Markdown 草稿能力",
+    body:
+      "`Info.plist` 注册了 Markdown 文档类型，二进制中有完整的 `MarkdownPanel`、最近文件、预览、导出等结构，说明 Markdown 是明确的核心模块。",
+  },
+  {
+    title: "更多原生能力",
+    body:
+      "包内还出现 `VideoQuickCut`、`WallpaperBlur`、`TranslationPanel`、`CalendarPanel` 等模块。GEKE 本轮先对齐主面板、草稿和历史流，不伪造尚未完成的原生权限能力。",
+  },
 ];
 
-export const features = [
-  {
-    title: "启动更短",
-    body:
-      "用键位直接打开应用、文件夹、网页与 GEKE 内置动作。减少鼠标绕路，适合中文用户按习惯自定义。",
-    chips: ["应用启动", "网页直达", "文件夹入口", "动作绑定"],
-  },
-  {
-    title: "截图更顺",
-    body:
-      "截图面板围绕标注、步骤序号、主题色、尺寸与回退设计，优先处理真实分享与协作场景，而不是只做一个取图动作。",
-    chips: ["标注工具栏", "最近选区", "主题色", "长截图预留"],
-  },
-  {
-    title: "切换更少",
-    body:
-      "剪贴板、OCR、翻译、钉图与快速改图在同一个工作台语境里完成，减少在多个工具之间反复跳转。",
-    chips: ["剪贴板历史", "OCR", "双向翻译", "钉图"],
-  },
-  {
-    title: "中文工作流优先",
-    body:
-      "参考桌面素材里对启动器、截图、翻译的高频反馈，文案、操作路径和功能排列都按中文用户语境重排。",
-    chips: ["中文文案", "快捷键提示", "场景导向"],
-  },
-  {
-    title: "原型可直接评审",
-    body:
-      "这次测试版额外提供了可打开的 SVG 原型图，方便快速评审主界面布局、截图面板和信息层级。",
-    chips: ["SVG 原型", "网页预览", "可下载"],
-  },
-  {
-    title: "后续可接原生 App",
-    body:
-      "页面结构已经拆成主站、更新日志和原型资源页，后续接 GitHub Releases、下载页和原生应用截图不会推倒重来。",
-    chips: ["多页结构", "版本日志", "发布占位"],
-  },
+export const implementedFeatures = [
+  "主入口改成 GEKE 工作台，不再默认打开宣传站。",
+  "新增快速捕捉表单，支持普通记录、草稿、Markdown、链接与剪贴板快照。",
+  "所有历史记录通过 Electron 主进程安全写入 `app.getPath(\"userData\")/workspace-data.json`。",
+  "主界面支持搜索、按类型筛选、收藏、置顶、复制和删除。",
+  "新增始终置顶的快速面板，可从菜单栏或全局快捷键 `CommandOrControl+Shift+Space` 唤起。",
+  "新增托盘/菜单栏入口，辅助进入工作台、快速面板、更新日志、原型图和关于页。",
+  "保留 changelog / prototype / about 作为辅助页面，不再承担产品主入口角色。",
 ];
 
 export const changelog = [
+  {
+    version: "0.3.0",
+    date: "2026-07-06",
+    build: "mvp.001",
+    label: "Functional MVP",
+    summary: "把 GEKE 从展示站改成了真正可运行的 macOS 工具工作台。",
+    bullets: [
+      "新增 preload + contextBridge + IPC + JSON store，所有记录安全落在 userData 下。",
+      "主入口改成工作台，支持快速捕捉、Markdown 草稿、剪贴板历史、搜索筛选和内容管理。",
+      "新增菜单栏托盘、全局快捷键和始终置顶快速面板，辅助页只保留 changelog / prototype / about。",
+    ],
+  },
   {
     version: "0.2.0",
     date: "2026-07-06",
@@ -77,34 +82,4 @@ export const changelog = [
       "提炼启动器、截图标注、剪贴板、OCR 翻译等关键卖点。",
     ],
   },
-  {
-    version: "0.1.1",
-    date: "2026-07-06",
-    build: "test.002",
-    label: "Flow Draft",
-    summary: "补齐更接近产品演示的工作台预览块。",
-    bullets: [
-      "在首页加入类似 Mac 窗口的工作台演示区域。",
-      "展示命令面板、截图控制卡和最近动作的信息层次。",
-      "优化移动端布局与按钮分布，确保手机可浏览。",
-    ],
-  },
-  {
-    version: "0.1.2",
-    date: "2026-07-06",
-    build: "test.003",
-    label: "Reference Pass",
-    summary: "按参考站的单页节奏重组内容，形成可发布测试版本。",
-    bullets: [
-      "加入阶段说明、测试版定位与原型图入口。",
-      "独立整理更新日志时间线，便于后续持续追加版本记录。",
-      "准备 GitHub 发布所需的静态站项目结构与构建脚本。",
-    ],
-  },
-];
-
-export const proofPoints = [
-  "参考了 `https://fg.vkr.me/mac` 的单页产品表达与 `https://fg.vkr.me/mac/changelog/` 的独立日志思路。",
-  "参考了 `/Users/chen/Desktop/1` 中关于启动器、截图标注、OCR 翻译、钉图与最近选区的中文功能描述。",
-  "现有项目已扩展为可本地启动的 macOS App 测试版，后续可继续接原生能力与下载分发。",
 ];

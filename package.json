@@ -1,7 +1,7 @@
 {
   "name": "geke-site",
-  "version": "0.2.0",
-  "description": "GEKE macOS preview app built with Vite and Electron.",
+  "version": "0.3.0",
+  "description": "GEKE functional macOS workbench built with Vite and Electron.",
   "author": "Smithereensun",
   "private": true,
   "type": "module",
