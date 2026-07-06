@@ -1,118 +1,127 @@
-import { app, BrowserWindow, Menu, Tray, clipboard, globalShortcut, ipcMain, nativeImage, screen, shell } from "electron";
-import { existsSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { execFile } from "node:child_process";
+import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStaticServer } from "./local-server.js";
-import { JsonWorkspaceStore } from "./storage.js";
+import { promisify } from "node:util";
+import { pinyin } from "pinyin-pro";
 
+const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const APP_TITLE = "极刻 GEKE";
+const APP_NAME = "极刻 GEKE";
 const DEV_SERVER_URL = "http://127.0.0.1:5173";
-const REPO_URL = "https://github.com/Smithereensun/GEKE";
-const QUICK_PANEL_SHORTCUT = "CommandOrControl+Shift+Space";
-const QUICK_PANEL_QUERY = "?panel=quick";
-const ALLOWED_ROUTES = new Set(["/", "/changelog/", "/prototype/", "/about/"]);
+const DEFAULT_RESULT_LIMIT = 24;
+const MAX_RESULT_LIMIT = 48;
+const APP_DIRECTORIES = [
+  "/Applications",
+  path.join(os.homedir(), "Applications"),
+  "/System/Applications",
+  "/System/Applications/Utilities",
+];
+const collator = new Intl.Collator("zh-Hans-CN", {
+  numeric: true,
+  sensitivity: "base",
+});
 
-let mainWindow;
-let quickPanelWindow;
-let appBaseUrl;
-let staticServer;
-let tray;
-let workspaceStore;
-let clipboardPollTimer;
-let lastClipboardText = "";
-let isQuitting = false;
+let mainWindow = null;
+let scanPromise = null;
+let appIndex = [];
+let lastScanAt = null;
 
-app.setName(APP_TITLE);
+app.setName(APP_NAME);
 
-function buildAppUrl(route = "/", search = "") {
-  const targetUrl = new URL(route, `${appBaseUrl}/`);
-  targetUrl.search = search;
-  return targetUrl.toString();
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 760,
+    height: 560,
+    minWidth: 680,
+    minHeight: 480,
+    center: true,
+    show: false,
+    title: APP_NAME,
+    backgroundColor: "#f4efe6",
+    titleBarStyle: "hiddenInset",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, "preload.js"),
+    },
+  });
+
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    mainWindow.focus();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+
+  if (app.isPackaged) {
+    void mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  } else {
+    void mainWindow.loadURL(DEV_SERVER_URL);
+  }
 }
 
-function getWindowRole(window) {
-  if (!window || window.isDestroyed()) {
-    return "unknown";
-  }
-
-  if (window === quickPanelWindow) {
-    return "quick-panel";
-  }
-
-  if (window === mainWindow) {
-    return "workspace";
-  }
-
-  return "secondary";
-}
-
-function showWindow(window) {
-  if (!window || window.isDestroyed()) {
+function showLauncher() {
+  if (!mainWindow) {
+    createWindow();
     return;
   }
 
-  if (!window.isVisible()) {
-    window.show();
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
   }
 
-  window.focus();
-}
-
-function navigateTo(route = "/") {
-  if (!mainWindow || mainWindow.isDestroyed() || !appBaseUrl) {
-    return;
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
   }
 
-  const targetRoute = ALLOWED_ROUTES.has(route) ? route : "/";
-  void mainWindow.loadURL(buildAppUrl(targetRoute));
-  showWindow(mainWindow);
+  mainWindow.focus();
 }
 
-function createAppMenu() {
+function createMenu() {
   const template = [
     {
-      label: app.getName(),
+      label: APP_NAME,
       submenu: [
         { role: "about" },
         { type: "separator" },
-        { label: "工作台", click: () => navigateTo("/") },
-        { label: "快速面板", accelerator: QUICK_PANEL_SHORTCUT, click: () => toggleQuickPanel() },
-        { label: "更新日志", click: () => navigateTo("/changelog/") },
-        { label: "原型图", click: () => navigateTo("/prototype/") },
-        { label: "关于", click: () => navigateTo("/about/") },
+        {
+          label: "显示启动器",
+          click: () => showLauncher(),
+        },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
         { type: "separator" },
         { role: "quit" },
       ],
     },
     {
-      label: "查看",
+      label: "编辑",
       submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "togglefullscreen" },
-        ...(!app.isPackaged ? [{ role: "toggleDevTools" }] : []),
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
       ],
     },
     {
       label: "窗口",
-      submenu: [
-        { role: "minimize" },
-        { role: "zoom" },
-        { role: "front" },
-        {
-          label: "切换工作台置顶",
-          click: () => {
-            void toggleWorkspaceAlwaysOnTop();
-          },
-        },
-      ],
+      submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }],
     },
     {
-      label: "帮助",
+      label: "查看",
       submenu: [
-        { label: "打开 GitHub 仓库", click: () => shell.openExternal(REPO_URL) },
-        { label: "更新日志", click: () => navigateTo("/changelog/") },
+        ...(!app.isPackaged ? [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }] : []),
+        { role: "togglefullscreen" },
       ],
     },
   ];
@@ -120,414 +129,340 @@ function createAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-async function resolveAppBaseUrl() {
-  if (!app.isPackaged) {
-    return process.env.VITE_DEV_SERVER_URL || DEV_SERVER_URL;
-  }
-
-  if (staticServer) {
-    return staticServer.url;
-  }
-
-  const distPath = path.join(__dirname, "..", "dist");
-
-  if (!existsSync(distPath)) {
-    throw new Error(`Missing built app assets at ${distPath}. Run npm run build first.`);
-  }
-
-  staticServer = await createStaticServer(distPath);
-  return staticServer.url;
+function normalizeText(value) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/gu, "");
 }
 
-function createSharedWindowOptions() {
+function isSubsequence(query, target) {
+  if (!query || !target) {
+    return null;
+  }
+
+  let lastIndex = -1;
+  let gapPenalty = 0;
+  let startIndex = -1;
+
+  for (const char of query) {
+    const nextIndex = target.indexOf(char, lastIndex + 1);
+    if (nextIndex === -1) {
+      return null;
+    }
+
+    if (startIndex === -1) {
+      startIndex = nextIndex;
+    } else {
+      gapPenalty += nextIndex - lastIndex - 1;
+    }
+
+    lastIndex = nextIndex;
+  }
+
+  const densityBonus = Math.max(0, query.length * 14 - gapPenalty * 3);
+  const startBonus = Math.max(0, 24 - startIndex);
+  const lengthPenalty = Math.max(0, target.length - query.length) * 0.2;
+
+  return densityBonus + startBonus - lengthPenalty;
+}
+
+function buildPinyinIndex(value) {
+  if (!/[\u3400-\u9fff]/u.test(value)) {
+    return { full: "", initials: "" };
+  }
+
+  const syllables = pinyin(value, {
+    toneType: "none",
+    type: "array",
+    nonZh: "consecutive",
+    v: false,
+  })
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+
   return {
-    backgroundColor: "#efe5d4",
-    show: false,
-    title: APP_TITLE,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, "preload.js"),
-    },
+    full: syllables.join(""),
+    initials: syllables.map((part) => part[0] ?? "").join(""),
   };
 }
 
-function attachExternalNavigationGuards(window) {
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: "deny" };
-  });
-
-  window.webContents.on("will-navigate", (event, targetUrl) => {
-    if (!appBaseUrl) {
-      return;
-    }
-
-    const allowedOrigin = new URL(appBaseUrl).origin;
-    const nextOrigin = new URL(targetUrl).origin;
-
-    if (nextOrigin !== allowedOrigin) {
-      event.preventDefault();
-      shell.openExternal(targetUrl);
-    }
-  });
-}
-
-async function createMainWindow() {
-  appBaseUrl = await resolveAppBaseUrl();
-
-  mainWindow = new BrowserWindow({
-    ...createSharedWindowOptions(),
-    height: 960,
-    minHeight: 760,
-    minWidth: 1100,
-    width: 1440,
-  });
-
-  mainWindow.setAlwaysOnTop(Boolean(workspaceStore.snapshot().settings.workspaceAlwaysOnTop));
-  attachExternalNavigationGuards(mainWindow);
-
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-  });
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-
-  mainWindow.on("close", (event) => {
-    if (isQuitting) {
-      return;
-    }
-
-    event.preventDefault();
-    mainWindow.hide();
-  });
-
-  createAppMenu();
-  void mainWindow.loadURL(buildAppUrl("/"));
-}
-
-function positionQuickPanel() {
-  if (!quickPanelWindow || quickPanelWindow.isDestroyed()) {
-    return;
-  }
-
-  const display = screen.getPrimaryDisplay();
-  const { width, x, y } = display.workArea;
-  const bounds = quickPanelWindow.getBounds();
-
-  quickPanelWindow.setPosition(x + width - bounds.width - 28, y + 28);
-}
-
-async function createQuickPanelWindow() {
-  if (!appBaseUrl) {
-    appBaseUrl = await resolveAppBaseUrl();
-  }
-
-  if (quickPanelWindow && !quickPanelWindow.isDestroyed()) {
-    return quickPanelWindow;
-  }
-
-  quickPanelWindow = new BrowserWindow({
-    ...createSharedWindowOptions(),
-    alwaysOnTop: Boolean(workspaceStore.snapshot().settings.quickPanelAlwaysOnTop),
-    fullscreenable: false,
-    height: 620,
-    maximizable: false,
-    minimizable: false,
-    resizable: false,
-    skipTaskbar: true,
-    title: `${APP_TITLE} 快速面板`,
-    titleBarStyle: "hiddenInset",
-    width: 420,
-  });
-
-  attachExternalNavigationGuards(quickPanelWindow);
-  positionQuickPanel();
-
-  quickPanelWindow.on("blur", () => {
-    if (!app.isPackaged) {
-      return;
-    }
-
-    quickPanelWindow.hide();
-  });
-
-  quickPanelWindow.on("close", (event) => {
-    if (isQuitting) {
-      return;
-    }
-
-    event.preventDefault();
-    quickPanelWindow.hide();
-  });
-
-  quickPanelWindow.on("closed", () => {
-    quickPanelWindow = null;
-  });
-
-  await quickPanelWindow.loadURL(buildAppUrl("/", QUICK_PANEL_QUERY));
-  return quickPanelWindow;
-}
-
-function buildTrayIcon() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
-      <rect x="1.5" y="1.5" width="15" height="15" rx="4" fill="black" />
-      <path d="M6 5.2h6.5v1.8H7.95v2.25h3.7V11h-3.7v2.1h4.8v1.8H6z" fill="white" />
-    </svg>
-  `;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-
-  if (process.platform === "darwin") {
-    image.setTemplateImage(true);
-  }
-
-  return image;
-}
-
-function createTray() {
-  tray = new Tray(buildTrayIcon());
-  tray.setToolTip(APP_TITLE);
-  tray.on("click", () => {
-    void toggleQuickPanel();
-  });
-  refreshTrayMenu();
-}
-
-function refreshTrayMenu() {
-  if (!tray) {
-    return;
-  }
-
-  const { settings, records } = workspaceStore.snapshot();
-  const clipboardCount = records.filter((record) => record.category === "clipboard").length;
-
-  const menu = Menu.buildFromTemplate([
-    { label: "打开工作台", click: () => navigateTo("/") },
-    { label: "快速面板", accelerator: QUICK_PANEL_SHORTCUT, click: () => toggleQuickPanel() },
-    {
-      label: settings.workspaceAlwaysOnTop ? "取消工作台置顶" : "置顶工作台",
-      click: () => {
-        void toggleWorkspaceAlwaysOnTop();
-      },
-    },
-    { type: "separator" },
-    { label: `剪贴板历史 ${clipboardCount} 条`, enabled: false },
-    { label: "更新日志", click: () => navigateTo("/changelog/") },
-    { label: "原型图", click: () => navigateTo("/prototype/") },
-    { label: "关于", click: () => navigateTo("/about/") },
-    { type: "separator" },
-    { label: "退出", click: () => app.quit() },
-  ]);
-
-  tray.setContextMenu(menu);
-}
-
-function buildMetaForWindow(window) {
+function viewModelForApp(appEntry, score) {
   return {
-    isElectron: true,
-    platform: process.platform,
-    role: getWindowRole(window),
-    shortcut: QUICK_PANEL_SHORTCUT,
-    userDataPath: app.getPath("userData"),
+    id: appEntry.path,
+    name: appEntry.name,
+    path: appEntry.path,
+    directory: appEntry.directory,
+    score,
   };
 }
 
-function broadcastState() {
-  const payload = {
-    meta: buildMetaForWindow(mainWindow),
-    state: workspaceStore.snapshot(),
-  };
+function scoreApplication(appEntry, rawQuery, normalizedQuery) {
+  const query = rawQuery.trim().toLowerCase();
+  const compactQuery = normalizedQuery;
 
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (window.isDestroyed()) {
+  if (!query) {
+    return 0;
+  }
+
+  let bestScore = 0;
+
+  const directComparisons = [
+    { value: appEntry.nameLower, exact: 420, prefix: 360, includes: 280 },
+    { value: appEntry.aliasLower, exact: 390, prefix: 330, includes: 250 },
+    { value: appEntry.pathLower, exact: 210, prefix: 180, includes: 150 },
+  ];
+
+  for (const field of directComparisons) {
+    if (field.value === query) {
+      bestScore = Math.max(bestScore, field.exact);
+    } else if (field.value.startsWith(query)) {
+      bestScore = Math.max(bestScore, field.prefix - field.value.indexOf(query));
+    } else if (field.value.includes(query)) {
+      bestScore = Math.max(bestScore, field.includes - field.value.indexOf(query) * 0.5);
+    }
+  }
+
+  const normalizedComparisons = [
+    { value: appEntry.nameNormalized, base: 260 },
+    { value: appEntry.aliasNormalized, base: 230 },
+    { value: appEntry.pathNormalized, base: 150 },
+    { value: appEntry.pinyinFull, base: 320 },
+    { value: appEntry.pinyinInitials, base: 300 },
+  ];
+
+  for (const field of normalizedComparisons) {
+    if (!field.value || !compactQuery) {
       continue;
     }
 
-    window.webContents.send("geke:state-changed", {
-      ...payload,
-      meta: buildMetaForWindow(window),
-    });
+    if (field.value === compactQuery) {
+      bestScore = Math.max(bestScore, field.base + 110);
+      continue;
+    }
+
+    if (field.value.startsWith(compactQuery)) {
+      bestScore = Math.max(bestScore, field.base + 70);
+      continue;
+    }
+
+    if (field.value.includes(compactQuery)) {
+      bestScore = Math.max(bestScore, field.base + 42 - field.value.indexOf(compactQuery) * 0.5);
+      continue;
+    }
+
+    const subsequenceScore = isSubsequence(compactQuery, field.value);
+    if (subsequenceScore !== null) {
+      bestScore = Math.max(bestScore, field.base + subsequenceScore);
+    }
   }
 
-  refreshTrayMenu();
-}
-
-async function mutateAndBroadcast(mutator) {
-  const snapshot = await mutator();
-  broadcastState();
-  return snapshot;
-}
-
-async function toggleWorkspaceAlwaysOnTop() {
-  const nextValue = !workspaceStore.snapshot().settings.workspaceAlwaysOnTop;
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setAlwaysOnTop(nextValue);
+  if (bestScore === 0) {
+    return 0;
   }
 
-  return mutateAndBroadcast(() => workspaceStore.updateSetting("workspaceAlwaysOnTop", nextValue));
+  const locationBoost = appEntry.directory.startsWith("/Applications") ? 18 : 8;
+  const lengthPenalty = appEntry.name.length * 0.3;
+
+  return bestScore + locationBoost - lengthPenalty;
 }
 
-async function showQuickPanel() {
-  const window = await createQuickPanelWindow();
-  positionQuickPanel();
-  showWindow(window);
+function searchIndex(query) {
+  const trimmed = query.trim();
+
+  if (!trimmed) {
+    return appIndex
+      .slice()
+      .sort((left, right) => collator.compare(left.name, right.name))
+      .slice(0, DEFAULT_RESULT_LIMIT)
+      .map((item) => viewModelForApp(item, 0));
+  }
+
+  const normalizedQuery = normalizeText(trimmed);
+
+  return appIndex
+    .map((item) => ({
+      item,
+      score: scoreApplication(item, trimmed, normalizedQuery),
+    }))
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return collator.compare(left.item.name, right.item.name);
+    })
+    .slice(0, MAX_RESULT_LIMIT)
+    .map(({ item, score }) => viewModelForApp(item, score));
 }
 
-async function toggleQuickPanel() {
-  const window = await createQuickPanelWindow();
+async function walkApplications(rootPath, collectedPaths) {
+  let entries = [];
 
-  if (window.isVisible()) {
-    window.hide();
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch {
     return;
   }
 
-  positionQuickPanel();
-  showWindow(window);
-}
-
-function registerShortcuts() {
-  globalShortcut.unregisterAll();
-  globalShortcut.register(QUICK_PANEL_SHORTCUT, () => {
-    void toggleQuickPanel();
-  });
-}
-
-function startClipboardMonitor() {
-  lastClipboardText = clipboard.readText();
-
-  clipboardPollTimer = setInterval(() => {
-    const settings = workspaceStore.snapshot().settings;
-
-    if (!settings.clipboardMonitoring) {
-      return;
-    }
-
-    const text = clipboard.readText();
-
-    if (!text || text === lastClipboardText) {
-      return;
-    }
-
-    lastClipboardText = text;
-    void mutateAndBroadcast(() => workspaceStore.captureClipboard(text));
-  }, 1400);
-}
-
-function stopClipboardMonitor() {
-  if (!clipboardPollTimer) {
-    return;
-  }
-
-  clearInterval(clipboardPollTimer);
-  clipboardPollTimer = null;
-}
-
-function setupIpc() {
-  ipcMain.handle("geke:bootstrap", (event) => ({
-    meta: buildMetaForWindow(BrowserWindow.fromWebContents(event.sender)),
-    state: workspaceStore.snapshot(),
-  }));
-
-  ipcMain.handle("geke:records:create", (_event, payload) => mutateAndBroadcast(() => workspaceStore.addRecord(payload)));
-  ipcMain.handle("geke:records:update", (_event, payload) =>
-    mutateAndBroadcast(() => workspaceStore.updateRecord(payload.id, payload)),
-  );
-  ipcMain.handle("geke:records:delete", (_event, id) => mutateAndBroadcast(() => workspaceStore.removeRecord(id)));
-  ipcMain.handle("geke:records:toggle-favorite", (_event, id) =>
-    mutateAndBroadcast(() => workspaceStore.toggleRecordFlag(id, "favorite")),
-  );
-  ipcMain.handle("geke:records:toggle-pinned", (_event, id) =>
-    mutateAndBroadcast(() => workspaceStore.toggleRecordFlag(id, "pinned")),
-  );
-  ipcMain.handle("geke:clipboard:capture", (_event, payload) => {
-    const text = clipboard.readText();
-    lastClipboardText = text || lastClipboardText;
-    return mutateAndBroadcast(() => workspaceStore.captureClipboard(text, Boolean(payload?.force)));
-  });
-  ipcMain.handle("geke:clipboard:write-text", (_event, text) => {
-    clipboard.writeText(String(text ?? ""));
-    return true;
-  });
-  ipcMain.handle("geke:settings:update", (_event, payload) =>
-    mutateAndBroadcast(async () => {
-      const snapshot = await workspaceStore.updateSetting(payload.key, payload.value);
-
-      if (payload.key === "workspaceAlwaysOnTop" && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.setAlwaysOnTop(Boolean(payload.value));
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) {
+        return;
       }
 
-      if (payload.key === "quickPanelAlwaysOnTop" && quickPanelWindow && !quickPanelWindow.isDestroyed()) {
-        quickPanelWindow.setAlwaysOnTop(Boolean(payload.value));
+      const fullPath = path.join(rootPath, entry.name);
+
+      if (entry.name.endsWith(".app")) {
+        collectedPaths.add(fullPath);
+        return;
       }
 
-      return snapshot;
+      await walkApplications(fullPath, collectedPaths);
     }),
   );
-  ipcMain.handle("geke:window:toggle-workspace-on-top", () => toggleWorkspaceAlwaysOnTop());
-  ipcMain.handle("geke:window:show-workspace", () => {
-    navigateTo("/");
-    return true;
-  });
-  ipcMain.handle("geke:window:show-quick-panel", async () => {
-    await showQuickPanel();
-    return true;
-  });
-  ipcMain.handle("geke:window:hide-quick-panel", () => {
-    if (quickPanelWindow && !quickPanelWindow.isDestroyed()) {
-      quickPanelWindow.hide();
-    }
-
-    return true;
-  });
-  ipcMain.handle("geke:navigate", (_event, route) => {
-    navigateTo(ALLOWED_ROUTES.has(route) ? route : "/");
-    return true;
-  });
-  ipcMain.handle("geke:open-external", (_event, url) => shell.openExternal(url));
 }
 
-app.whenReady().then(() => {
-  workspaceStore = new JsonWorkspaceStore(path.join(app.getPath("userData"), "workspace-data.json"));
+async function readInfoPlist(infoPlistPath) {
+  try {
+    const { stdout } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", infoPlistPath]);
+    return JSON.parse(stdout);
+  } catch {
+    return {};
+  }
+}
 
-  void workspaceStore.load().then(async () => {
-    setupIpc();
-    registerShortcuts();
-    startClipboardMonitor();
-    createTray();
-    await createMainWindow();
-    broadcastState();
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let currentIndex = 0;
+
+  async function runWorker() {
+    while (currentIndex < items.length) {
+      const index = currentIndex;
+      currentIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => runWorker());
+  await Promise.all(workers);
+  return results;
+}
+
+async function buildAppEntry(appPath) {
+  const infoPlistPath = path.join(appPath, "Contents", "Info.plist");
+  const plist = await readInfoPlist(infoPlistPath);
+  const fileName = path.basename(appPath, ".app");
+  const displayName =
+    typeof plist.CFBundleDisplayName === "string" && plist.CFBundleDisplayName.trim()
+      ? plist.CFBundleDisplayName.trim()
+      : "";
+  const bundleName =
+    typeof plist.CFBundleName === "string" && plist.CFBundleName.trim() ? plist.CFBundleName.trim() : "";
+  const name = displayName || bundleName || fileName;
+  const alias = [displayName, bundleName, fileName]
+    .filter(Boolean)
+    .filter((value, index, list) => list.indexOf(value) === index)
+    .join(" ");
+  const { full: pinyinFull, initials: pinyinInitials } = buildPinyinIndex(alias);
+
+  return {
+    name,
+    path: appPath,
+    directory: path.dirname(appPath),
+    nameLower: name.toLowerCase(),
+    aliasLower: alias.toLowerCase(),
+    pathLower: appPath.toLowerCase(),
+    nameNormalized: normalizeText(name),
+    aliasNormalized: normalizeText(alias),
+    pathNormalized: normalizeText(appPath),
+    pinyinFull,
+    pinyinInitials,
+  };
+}
+
+async function scanApplications() {
+  if (scanPromise) {
+    return scanPromise;
+  }
+
+  scanPromise = (async () => {
+    const collectedPaths = new Set();
+
+    for (const appDirectory of APP_DIRECTORIES) {
+      await walkApplications(appDirectory, collectedPaths);
+    }
+
+    const discovered = await mapWithConcurrency([...collectedPaths], 8, buildAppEntry);
+    appIndex = discovered.sort((left, right) => collator.compare(left.name, right.name));
+    lastScanAt = new Date().toISOString();
+
+    return appIndex;
+  })().finally(() => {
+    scanPromise = null;
   });
+
+  return scanPromise;
+}
+
+function buildSearchResponse(query) {
+  return {
+    query,
+    results: searchIndex(query),
+    totalCount: appIndex.length,
+    scannedPaths: APP_DIRECTORIES,
+    lastScanAt,
+  };
+}
+
+async function launchApplication(appPath) {
+  if (!appPath) {
+    throw new Error("缺少应用路径。");
+  }
+
+  const errorMessage = await shell.openPath(appPath);
+
+  if (errorMessage) {
+    throw new Error(errorMessage);
+  }
+
+  return true;
+}
+
+ipcMain.handle("geke:search-applications", async (_event, query = "") => {
+  if (appIndex.length === 0) {
+    await scanApplications();
+  }
+
+  return buildSearchResponse(query);
+});
+
+ipcMain.handle("geke:rescan-applications", async () => {
+  await scanApplications();
+  return buildSearchResponse("");
+});
+
+ipcMain.handle("geke:launch-application", async (_event, appPath) => launchApplication(appPath));
+
+ipcMain.handle("geke:hide-launcher", async () => {
+  mainWindow?.hide();
+  return true;
+});
+
+app.whenReady().then(() => {
+  createMenu();
+  createWindow();
+  void scanApplications();
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void createMainWindow();
-    return;
-  }
-
-  if (mainWindow) {
-    showWindow(mainWindow);
-  }
+  showLauncher();
 });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
-  }
-});
-
-app.on("before-quit", () => {
-  isQuitting = true;
-  stopClipboardMonitor();
-  globalShortcut.unregisterAll();
-});
-
-app.on("will-quit", () => {
-  if (staticServer) {
-    void staticServer.close();
   }
 });
