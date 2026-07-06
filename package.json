@@ -1,7 +1,7 @@
 {
   "name": "geke-launcher",
-  "version": "0.3.0",
-  "description": "极刻 GEKE macOS app launcher built with Vite and Electron.",
+  "version": "1.0.0",
+  "description": "Raycast-style macOS app launcher built with Electron and Vite.",
   "author": "Smithereensun",
   "private": true,
   "type": "module",
@@ -9,11 +9,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
     "app:dev": "NODE_ENV=development concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "electron:dev": "npm run app:dev",
-    "app:build": "npm run build && electron-builder",
-    "dist:mac": "npm run app:build"
+    "app:build": "npm run build && electron-builder"
   },
   "dependencies": {
     "pinyin-pro": "^3.27.0"
@@ -28,15 +25,19 @@
   "build": {
     "appId": "com.smithereensun.geke",
     "productName": "极刻 GEKE",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
       "package.json"
     ],
+    "asar": true,
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "target": [
         "dir",

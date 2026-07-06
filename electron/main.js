@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, shell } from "electron";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -9,10 +9,11 @@ import { pinyin } from "pinyin-pro";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
 const APP_NAME = "极刻 GEKE";
 const DEV_SERVER_URL = "http://127.0.0.1:5173";
-const DEFAULT_RESULT_LIMIT = 24;
-const MAX_RESULT_LIMIT = 48;
+const DEFAULT_RESULTS = 14;
+const SEARCH_LIMIT = 40;
 const APP_DIRECTORIES = [
   "/Applications",
   path.join(os.homedir(), "Applications"),
@@ -20,27 +21,335 @@ const APP_DIRECTORIES = [
   "/System/Applications/Utilities",
 ];
 const collator = new Intl.Collator("zh-Hans-CN", {
-  numeric: true,
   sensitivity: "base",
+  numeric: true,
 });
 
 let mainWindow = null;
-let scanPromise = null;
 let appIndex = [];
 let lastScanAt = null;
+let activeScanPromise = null;
 
 app.setName(APP_NAME);
 
+function normalizeText(value) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/gu, "");
+}
+
+function scoreSubsequence(query, target) {
+  if (!query || !target) {
+    return 0;
+  }
+
+  let lastIndex = -1;
+  let gapPenalty = 0;
+  let firstIndex = -1;
+
+  for (const character of query) {
+    const nextIndex = target.indexOf(character, lastIndex + 1);
+    if (nextIndex === -1) {
+      return 0;
+    }
+
+    if (firstIndex === -1) {
+      firstIndex = nextIndex;
+    } else {
+      gapPenalty += nextIndex - lastIndex - 1;
+    }
+
+    lastIndex = nextIndex;
+  }
+
+  return Math.max(0, query.length * 18 - gapPenalty * 3 + Math.max(0, 18 - firstIndex));
+}
+
+function buildPinyinIndex(value) {
+  if (!/[\u3400-\u9fff]/u.test(value)) {
+    return { full: "", initials: "" };
+  }
+
+  const parts = pinyin(value, {
+    toneType: "none",
+    type: "array",
+    nonZh: "consecutive",
+    v: false,
+  })
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+
+  return {
+    full: parts.join(""),
+    initials: parts.map((item) => item[0] ?? "").join(""),
+  };
+}
+
+function compareEntries(left, right) {
+  if (left.directoryRank !== right.directoryRank) {
+    return left.directoryRank - right.directoryRank;
+  }
+
+  return collator.compare(left.name, right.name);
+}
+
+async function directoryExists(directory) {
+  try {
+    const stats = await fs.stat(directory);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function collectAppBundles(rootDirectory, sourceDirectory) {
+  if (!(await directoryExists(rootDirectory))) {
+    return [];
+  }
+
+  const bundles = [];
+  const queue = [rootDirectory];
+
+  while (queue.length) {
+    const currentDirectory = queue.shift();
+    let entries;
+
+    try {
+      entries = await fs.readdir(currentDirectory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((left, right) => collator.compare(left.name, right.name));
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || !entry.isDirectory()) {
+        continue;
+      }
+
+      const fullPath = path.join(currentDirectory, entry.name);
+      if (entry.name.toLowerCase().endsWith(".app")) {
+        bundles.push({ path: fullPath, directory: sourceDirectory });
+        continue;
+      }
+
+      queue.push(fullPath);
+    }
+  }
+
+  return bundles;
+}
+
+async function readApplicationName(appPath) {
+  const fallbackName = path.basename(appPath, ".app");
+  const plistPath = path.join(appPath, "Contents", "Info.plist");
+
+  try {
+    const { stdout } = await execFileAsync("/usr/bin/plutil", ["-convert", "json", "-o", "-", plistPath], {
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const plist = JSON.parse(stdout);
+    return String(plist.CFBundleDisplayName || plist.CFBundleName || fallbackName).trim() || fallbackName;
+  } catch {
+    return fallbackName;
+  }
+}
+
+function buildIndexEntry(appPath, directory, name) {
+  const bundleName = path.basename(appPath, ".app");
+  const alias = bundleName === name ? "" : bundleName;
+  const pinyinIndex = buildPinyinIndex([name, alias].filter(Boolean).join(" "));
+
+  return {
+    id: appPath,
+    name,
+    path: appPath,
+    directory,
+    alias,
+    directoryRank: Math.max(APP_DIRECTORIES.indexOf(directory), 0),
+    nameLower: name.toLowerCase(),
+    aliasLower: alias.toLowerCase(),
+    pathLower: appPath.toLowerCase(),
+    nameNormalized: normalizeText(name),
+    aliasNormalized: normalizeText(alias),
+    pathNormalized: normalizeText(appPath),
+    pinyinFull: pinyinIndex.full,
+    pinyinInitials: pinyinIndex.initials,
+  };
+}
+
+function fieldScore(query, target, weights) {
+  if (!query || !target) {
+    return 0;
+  }
+
+  if (target === query) {
+    return weights.exact;
+  }
+
+  if (target.startsWith(query)) {
+    return weights.prefix - Math.max(0, target.length - query.length) * 0.2;
+  }
+
+  const includeIndex = target.indexOf(query);
+  if (includeIndex !== -1) {
+    return weights.includes - includeIndex * 2;
+  }
+
+  const subsequenceScore = scoreSubsequence(query, target);
+  if (subsequenceScore > 0) {
+    return weights.subsequence + subsequenceScore;
+  }
+
+  return 0;
+}
+
+function scoreApplication(entry, rawQuery) {
+  const lowerQuery = rawQuery.trim().toLowerCase();
+  if (!lowerQuery) {
+    return 0;
+  }
+
+  const normalizedQuery = normalizeText(lowerQuery);
+
+  return Math.max(
+    fieldScore(lowerQuery, entry.nameLower, { exact: 1200, prefix: 980, includes: 760, subsequence: 540 }),
+    fieldScore(lowerQuery, entry.aliasLower, { exact: 1080, prefix: 900, includes: 720, subsequence: 500 }),
+    fieldScore(lowerQuery, entry.pathLower, { exact: 480, prefix: 420, includes: 320, subsequence: 180 }),
+    fieldScore(normalizedQuery, entry.nameNormalized, { exact: 1160, prefix: 940, includes: 740, subsequence: 520 }),
+    fieldScore(normalizedQuery, entry.aliasNormalized, { exact: 1040, prefix: 860, includes: 700, subsequence: 480 }),
+    fieldScore(normalizedQuery, entry.pathNormalized, { exact: 420, prefix: 360, includes: 300, subsequence: 160 }),
+    fieldScore(normalizedQuery, entry.pinyinFull, { exact: 1120, prefix: 920, includes: 760, subsequence: 540 }),
+    fieldScore(normalizedQuery, entry.pinyinInitials, { exact: 1100, prefix: 960, includes: 820, subsequence: 620 }),
+  );
+}
+
+function createResponseItem(entry) {
+  return {
+    id: entry.id,
+    name: entry.name,
+    path: entry.path,
+    directory: entry.directory,
+  };
+}
+
+function createPayload(query, results) {
+  return {
+    query,
+    results: results.map(createResponseItem),
+    totalCount: appIndex.length,
+    scannedPaths: [...APP_DIRECTORIES],
+    lastScanAt,
+  };
+}
+
+function searchIndex(query = "") {
+  const trimmedQuery = String(query).trim();
+
+  if (!trimmedQuery) {
+    return createPayload("", appIndex.slice(0, DEFAULT_RESULTS));
+  }
+
+  const scoredResults = appIndex
+    .map((entry) => ({ entry, score: scoreApplication(entry, trimmedQuery) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => {
+      if (left.score !== right.score) {
+        return right.score - left.score;
+      }
+
+      return compareEntries(left.entry, right.entry);
+    })
+    .slice(0, SEARCH_LIMIT)
+    .map((item) => item.entry);
+
+  return createPayload(trimmedQuery, scoredResults);
+}
+
+async function scanApplications() {
+  const discoveredBundles = [];
+
+  for (const directory of APP_DIRECTORIES) {
+    const bundles = await collectAppBundles(directory, directory);
+    discoveredBundles.push(...bundles);
+  }
+
+  const uniqueBundles = new Map();
+  for (const bundle of discoveredBundles) {
+    uniqueBundles.set(bundle.path, bundle);
+  }
+
+  const indexEntries = await Promise.all(
+    [...uniqueBundles.values()].map(async ({ path: appPath, directory }) => {
+      const name = await readApplicationName(appPath);
+      return buildIndexEntry(appPath, directory, name);
+    }),
+  );
+
+  indexEntries.sort(compareEntries);
+  appIndex = indexEntries;
+  lastScanAt = new Date().toISOString();
+
+  return appIndex;
+}
+
+async function ensureApplicationIndex(force = false) {
+  if (!force && appIndex.length) {
+    return appIndex;
+  }
+
+  if (activeScanPromise) {
+    return activeScanPromise;
+  }
+
+  activeScanPromise = scanApplications()
+    .catch((error) => {
+      console.error("Application scan failed", error);
+      if (!appIndex.length) {
+        throw error;
+      }
+      return appIndex;
+    })
+    .finally(() => {
+      activeScanPromise = null;
+    });
+
+  return activeScanPromise;
+}
+
+async function launchApplication(appPath) {
+  const normalizedPath = String(appPath || "");
+  const target = appIndex.find((entry) => entry.path === normalizedPath);
+
+  if (!target) {
+    throw new Error("The selected application is no longer available. Try rescanning.");
+  }
+
+  const shellError = await shell.openPath(target.path);
+  if (!shellError) {
+    return true;
+  }
+
+  try {
+    await execFileAsync("/usr/bin/open", [target.path]);
+    return true;
+  } catch (error) {
+    throw new Error(shellError || error.message || `Failed to launch ${target.name}.`);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 760,
-    height: 560,
-    minWidth: 680,
-    minHeight: 480,
+    width: 820,
+    height: 620,
+    minWidth: 720,
+    minHeight: 520,
     center: true,
     show: false,
     title: APP_NAME,
-    backgroundColor: "#f4efe6",
+    backgroundColor: "#090c12",
     titleBarStyle: "hiddenInset",
     webPreferences: {
       contextIsolation: true,
@@ -50,8 +359,12 @@ function createWindow() {
   });
 
   mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    mainWindow.focus();
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    console.error("Renderer failed to load", { errorCode, errorDescription, validatedURL });
   });
 
   mainWindow.on("closed", () => {
@@ -60,9 +373,10 @@ function createWindow() {
 
   if (app.isPackaged) {
     void mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
-  } else {
-    void mainWindow.loadURL(DEV_SERVER_URL);
+    return;
   }
+
+  void mainWindow.loadURL(DEV_SERVER_URL);
 }
 
 function showLauncher() {
@@ -75,11 +389,12 @@ function showLauncher() {
     mainWindow.restore();
   }
 
-  if (!mainWindow.isVisible()) {
-    mainWindow.show();
-  }
-
+  mainWindow.show();
   mainWindow.focus();
+}
+
+function hideLauncher() {
+  mainWindow?.hide();
 }
 
 function createMenu() {
@@ -87,10 +402,8 @@ function createMenu() {
     {
       label: APP_NAME,
       submenu: [
-        { role: "about" },
-        { type: "separator" },
         {
-          label: "显示启动器",
+          label: "Show Launcher",
           click: () => showLauncher(),
         },
         { type: "separator" },
@@ -102,7 +415,7 @@ function createMenu() {
       ],
     },
     {
-      label: "编辑",
+      label: "Edit",
       submenu: [
         { role: "undo" },
         { role: "redo" },
@@ -114,11 +427,11 @@ function createMenu() {
       ],
     },
     {
-      label: "窗口",
+      label: "Window",
       submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }],
     },
     {
-      label: "查看",
+      label: "View",
       submenu: [
         ...(!app.isPackaged ? [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }] : []),
         { role: "togglefullscreen" },
@@ -129,336 +442,52 @@ function createMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function normalizeText(value) {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/\p{M}/gu, "")
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/gu, "");
-}
-
-function isSubsequence(query, target) {
-  if (!query || !target) {
-    return null;
-  }
-
-  let lastIndex = -1;
-  let gapPenalty = 0;
-  let startIndex = -1;
-
-  for (const char of query) {
-    const nextIndex = target.indexOf(char, lastIndex + 1);
-    if (nextIndex === -1) {
-      return null;
-    }
-
-    if (startIndex === -1) {
-      startIndex = nextIndex;
-    } else {
-      gapPenalty += nextIndex - lastIndex - 1;
-    }
-
-    lastIndex = nextIndex;
-  }
-
-  const densityBonus = Math.max(0, query.length * 14 - gapPenalty * 3);
-  const startBonus = Math.max(0, 24 - startIndex);
-  const lengthPenalty = Math.max(0, target.length - query.length) * 0.2;
-
-  return densityBonus + startBonus - lengthPenalty;
-}
-
-function buildPinyinIndex(value) {
-  if (!/[\u3400-\u9fff]/u.test(value)) {
-    return { full: "", initials: "" };
-  }
-
-  const syllables = pinyin(value, {
-    toneType: "none",
-    type: "array",
-    nonZh: "consecutive",
-    v: false,
-  })
-    .map((part) => part.trim().toLowerCase())
-    .filter(Boolean);
-
-  return {
-    full: syllables.join(""),
-    initials: syllables.map((part) => part[0] ?? "").join(""),
-  };
-}
-
-function viewModelForApp(appEntry, score) {
-  return {
-    id: appEntry.path,
-    name: appEntry.name,
-    path: appEntry.path,
-    directory: appEntry.directory,
-    score,
-  };
-}
-
-function scoreApplication(appEntry, rawQuery, normalizedQuery) {
-  const query = rawQuery.trim().toLowerCase();
-  const compactQuery = normalizedQuery;
-
-  if (!query) {
-    return 0;
-  }
-
-  let bestScore = 0;
-
-  const directComparisons = [
-    { value: appEntry.nameLower, exact: 420, prefix: 360, includes: 280 },
-    { value: appEntry.aliasLower, exact: 390, prefix: 330, includes: 250 },
-    { value: appEntry.pathLower, exact: 210, prefix: 180, includes: 150 },
-  ];
-
-  for (const field of directComparisons) {
-    if (field.value === query) {
-      bestScore = Math.max(bestScore, field.exact);
-    } else if (field.value.startsWith(query)) {
-      bestScore = Math.max(bestScore, field.prefix - field.value.indexOf(query));
-    } else if (field.value.includes(query)) {
-      bestScore = Math.max(bestScore, field.includes - field.value.indexOf(query) * 0.5);
-    }
-  }
-
-  const normalizedComparisons = [
-    { value: appEntry.nameNormalized, base: 260 },
-    { value: appEntry.aliasNormalized, base: 230 },
-    { value: appEntry.pathNormalized, base: 150 },
-    { value: appEntry.pinyinFull, base: 320 },
-    { value: appEntry.pinyinInitials, base: 300 },
-  ];
-
-  for (const field of normalizedComparisons) {
-    if (!field.value || !compactQuery) {
-      continue;
-    }
-
-    if (field.value === compactQuery) {
-      bestScore = Math.max(bestScore, field.base + 110);
-      continue;
-    }
-
-    if (field.value.startsWith(compactQuery)) {
-      bestScore = Math.max(bestScore, field.base + 70);
-      continue;
-    }
-
-    if (field.value.includes(compactQuery)) {
-      bestScore = Math.max(bestScore, field.base + 42 - field.value.indexOf(compactQuery) * 0.5);
-      continue;
-    }
-
-    const subsequenceScore = isSubsequence(compactQuery, field.value);
-    if (subsequenceScore !== null) {
-      bestScore = Math.max(bestScore, field.base + subsequenceScore);
-    }
-  }
-
-  if (bestScore === 0) {
-    return 0;
-  }
-
-  const locationBoost = appEntry.directory.startsWith("/Applications") ? 18 : 8;
-  const lengthPenalty = appEntry.name.length * 0.3;
-
-  return bestScore + locationBoost - lengthPenalty;
-}
-
-function searchIndex(query) {
-  const trimmed = query.trim();
-
-  if (!trimmed) {
-    return appIndex
-      .slice()
-      .sort((left, right) => collator.compare(left.name, right.name))
-      .slice(0, DEFAULT_RESULT_LIMIT)
-      .map((item) => viewModelForApp(item, 0));
-  }
-
-  const normalizedQuery = normalizeText(trimmed);
-
-  return appIndex
-    .map((item) => ({
-      item,
-      score: scoreApplication(item, trimmed, normalizedQuery),
-    }))
-    .filter(({ score }) => score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
-      }
-
-      return collator.compare(left.item.name, right.item.name);
-    })
-    .slice(0, MAX_RESULT_LIMIT)
-    .map(({ item, score }) => viewModelForApp(item, score));
-}
-
-async function walkApplications(rootPath, collectedPaths) {
-  let entries = [];
-
-  try {
-    entries = await fs.readdir(rootPath, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) {
-        return;
-      }
-
-      const fullPath = path.join(rootPath, entry.name);
-
-      if (entry.name.endsWith(".app")) {
-        collectedPaths.add(fullPath);
-        return;
-      }
-
-      await walkApplications(fullPath, collectedPaths);
-    }),
-  );
-}
-
-async function readInfoPlist(infoPlistPath) {
-  try {
-    const { stdout } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", infoPlistPath]);
-    return JSON.parse(stdout);
-  } catch {
-    return {};
-  }
-}
-
-async function mapWithConcurrency(items, concurrency, worker) {
-  const results = new Array(items.length);
-  let currentIndex = 0;
-
-  async function runWorker() {
-    while (currentIndex < items.length) {
-      const index = currentIndex;
-      currentIndex += 1;
-      results[index] = await worker(items[index], index);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => runWorker());
-  await Promise.all(workers);
-  return results;
-}
-
-async function buildAppEntry(appPath) {
-  const infoPlistPath = path.join(appPath, "Contents", "Info.plist");
-  const plist = await readInfoPlist(infoPlistPath);
-  const fileName = path.basename(appPath, ".app");
-  const displayName =
-    typeof plist.CFBundleDisplayName === "string" && plist.CFBundleDisplayName.trim()
-      ? plist.CFBundleDisplayName.trim()
-      : "";
-  const bundleName =
-    typeof plist.CFBundleName === "string" && plist.CFBundleName.trim() ? plist.CFBundleName.trim() : "";
-  const name = displayName || bundleName || fileName;
-  const alias = [displayName, bundleName, fileName]
-    .filter(Boolean)
-    .filter((value, index, list) => list.indexOf(value) === index)
-    .join(" ");
-  const { full: pinyinFull, initials: pinyinInitials } = buildPinyinIndex(alias);
-
-  return {
-    name,
-    path: appPath,
-    directory: path.dirname(appPath),
-    nameLower: name.toLowerCase(),
-    aliasLower: alias.toLowerCase(),
-    pathLower: appPath.toLowerCase(),
-    nameNormalized: normalizeText(name),
-    aliasNormalized: normalizeText(alias),
-    pathNormalized: normalizeText(appPath),
-    pinyinFull,
-    pinyinInitials,
-  };
-}
-
-async function scanApplications() {
-  if (scanPromise) {
-    return scanPromise;
-  }
-
-  scanPromise = (async () => {
-    const collectedPaths = new Set();
-
-    for (const appDirectory of APP_DIRECTORIES) {
-      await walkApplications(appDirectory, collectedPaths);
-    }
-
-    const discovered = await mapWithConcurrency([...collectedPaths], 8, buildAppEntry);
-    appIndex = discovered.sort((left, right) => collator.compare(left.name, right.name));
-    lastScanAt = new Date().toISOString();
-
-    return appIndex;
-  })().finally(() => {
-    scanPromise = null;
+function registerIpc() {
+  ipcMain.handle("launcher:get-initial-apps", async () => {
+    await ensureApplicationIndex(false);
+    return searchIndex("");
   });
 
-  return scanPromise;
+  ipcMain.handle("launcher:search-applications", async (_event, query) => {
+    await ensureApplicationIndex(false);
+    return searchIndex(query);
+  });
+
+  ipcMain.handle("launcher:rescan-applications", async () => {
+    await ensureApplicationIndex(true);
+    return searchIndex("");
+  });
+
+  ipcMain.handle("launcher:launch-application", async (_event, appPath) => launchApplication(appPath));
+  ipcMain.handle("launcher:hide-launcher", async () => {
+    hideLauncher();
+    return true;
+  });
 }
 
-function buildSearchResponse(query) {
-  return {
-    query,
-    results: searchIndex(query),
-    totalCount: appIndex.length,
-    scannedPaths: APP_DIRECTORIES,
-    lastScanAt,
-  };
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
 }
 
-async function launchApplication(appPath) {
-  if (!appPath) {
-    throw new Error("缺少应用路径。");
-  }
-
-  const errorMessage = await shell.openPath(appPath);
-
-  if (errorMessage) {
-    throw new Error(errorMessage);
-  }
-
-  return true;
-}
-
-ipcMain.handle("geke:search-applications", async (_event, query = "") => {
-  if (appIndex.length === 0) {
-    await scanApplications();
-  }
-
-  return buildSearchResponse(query);
-});
-
-ipcMain.handle("geke:rescan-applications", async () => {
-  await scanApplications();
-  return buildSearchResponse("");
-});
-
-ipcMain.handle("geke:launch-application", async (_event, appPath) => launchApplication(appPath));
-
-ipcMain.handle("geke:hide-launcher", async () => {
-  mainWindow?.hide();
-  return true;
-});
-
-app.whenReady().then(() => {
-  createMenu();
-  createWindow();
-  void scanApplications();
-});
-
-app.on("activate", () => {
+app.on("second-instance", () => {
   showLauncher();
+});
+
+app.whenReady().then(async () => {
+  createMenu();
+  registerIpc();
+  createWindow();
+
+  try {
+    await ensureApplicationIndex(true);
+  } catch (error) {
+    console.error("Initial application scan failed", error);
+  }
+
+  app.on("activate", () => {
+    showLauncher();
+  });
 });
 
 app.on("window-all-closed", () => {

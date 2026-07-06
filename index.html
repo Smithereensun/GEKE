@@ -3,13 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="极刻 GEKE 是一个极简 macOS 应用启动器，支持模糊搜索、拼音匹配与快速启动。" />
-    <meta name="theme-color" content="#f4efe6" />
-    <link rel="stylesheet" href="/styles.css" />
+    <meta
+      name="description"
+      content="极刻 GEKE 是一个 Raycast 风格的 macOS 应用启动器，支持模糊搜索、拼音匹配与快速启动。"
+    />
+    <meta name="theme-color" content="#0c1018" />
+    <link rel="stylesheet" href="./styles.css" />
     <title>极刻 GEKE</title>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/src/launcher.js"></script>
+    <div id="app">
+      <main class="shell">
+        <section class="panel panel--boot" aria-live="polite">
+          <div class="boot-copy">Loading launcher...</div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./src/renderer.js"></script>
   </body>
-  </html>
+</html>

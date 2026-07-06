@@ -5,8 +5,9 @@ function invoke(channel, payload) {
 }
 
 contextBridge.exposeInMainWorld("geke", {
-  searchApplications: (query = "") => invoke("geke:search-applications", query),
-  launchApplication: (appPath) => invoke("geke:launch-application", appPath),
-  rescanApplications: () => invoke("geke:rescan-applications"),
-  hideLauncher: () => invoke("geke:hide-launcher"),
+  getInitialApps: () => invoke("launcher:get-initial-apps"),
+  searchApplications: (query = "") => invoke("launcher:search-applications", query),
+  launchApplication: (appPath) => invoke("launcher:launch-application", appPath),
+  rescanApplications: () => invoke("launcher:rescan-applications"),
+  hideLauncher: () => invoke("launcher:hide-launcher"),
 });
