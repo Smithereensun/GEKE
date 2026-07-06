@@ -94,6 +94,7 @@ button {
 
 .panel-header {
   padding: 6px 6px 0;
+  -webkit-app-region: drag;
 }
 
 .brand {
@@ -147,6 +148,7 @@ button {
 
 .search {
   position: relative;
+  -webkit-app-region: no-drag;
 }
 
 .search-input {
@@ -161,6 +163,7 @@ button {
   outline: none;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+  -webkit-app-region: no-drag;
 }
 
 .search-input:focus {
@@ -182,6 +185,7 @@ button {
   transform: translateY(-50%);
   color: var(--muted);
   font-size: 1.05rem;
+  pointer-events: none;
 }
 
 .status-bar {
@@ -221,6 +225,7 @@ button {
   color: var(--text);
   font-size: 0.84rem;
   transition: background 140ms ease, border-color 140ms ease;
+  -webkit-app-region: no-drag;
 }
 
 .action-button:hover {
@@ -235,6 +240,7 @@ button {
   gap: 8px;
   overflow: auto;
   padding-right: 2px;
+  -webkit-app-region: no-drag;
 }
 
 .results::-webkit-scrollbar {
@@ -258,6 +264,7 @@ button {
   background: rgba(255, 255, 255, 0.03);
   text-align: left;
   transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  -webkit-app-region: no-drag;
 }
 
 .result-row:hover,

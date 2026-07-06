@@ -15,6 +15,8 @@ const state = {
 };
 
 let requestToken = 0;
+let isComposing = false;
+let ui = null;
 
 bindEvents();
 render();
@@ -45,11 +47,19 @@ async function initialize() {
 }
 
 function bindEvents() {
+  launcher.onWindowVisible?.(() => {
+    focusInput({ cursorToEnd: true });
+  });
+
   window.addEventListener("focus", () => {
     focusInput({ cursorToEnd: true });
   });
 
   window.addEventListener("keydown", (event) => {
+    if (isComposing) {
+      return;
+    }
+
     if (event.metaKey && event.key.toLowerCase() === "r") {
       event.preventDefault();
       void rescanApplications();
@@ -106,6 +116,7 @@ function createFallbackBridge() {
     async hideLauncher() {
       return true;
     },
+    onWindowVisible() {},
   };
 }
 
@@ -141,22 +152,24 @@ function applyPayload(payload) {
 }
 
 function focusInput({ selectAll = false, cursorToEnd = false } = {}) {
-  const input = document.querySelector(".search-input");
-  if (!input) {
-    return;
-  }
+  requestAnimationFrame(() => {
+    const input = ui?.searchInput ?? document.querySelector(".search-input");
+    if (!input || !input.isConnected || input.disabled || input.readOnly) {
+      return;
+    }
 
-  input.focus();
+    input.focus({ preventScroll: true });
 
-  if (selectAll) {
-    input.select();
-    return;
-  }
+    if (selectAll) {
+      input.select();
+      return;
+    }
 
-  if (cursorToEnd) {
-    const cursor = input.value.length;
-    input.setSelectionRange(cursor, cursor);
-  }
+    if (cursorToEnd) {
+      const cursor = input.value.length;
+      input.setSelectionRange(cursor, cursor);
+    }
+  });
 }
 
 function moveSelection(offset) {
@@ -203,7 +216,6 @@ async function performSearch(query) {
   }
 
   render();
-  focusInput({ cursorToEnd: true });
 }
 
 async function rescanApplications() {
@@ -286,6 +298,22 @@ async function launchSelected() {
 }
 
 function onInput(event) {
+  state.query = event.currentTarget.value;
+  state.selectedIndex = 0;
+
+  if (event.isComposing || isComposing) {
+    return;
+  }
+
+  void performSearch(state.query);
+}
+
+function onCompositionStart() {
+  isComposing = true;
+}
+
+function onCompositionEnd(event) {
+  isComposing = false;
   state.query = event.currentTarget.value;
   state.selectedIndex = 0;
   void performSearch(state.query);
@@ -400,7 +428,7 @@ function renderResults() {
     .join("");
 }
 
-function render() {
+function renderShell() {
   appElement.innerHTML = `
     <main class="shell">
       <section class="panel" aria-live="polite">
@@ -423,22 +451,20 @@ function render() {
             class="search-input"
             type="text"
             placeholder="Search applications, pinyin, or initials"
-            value="${escapeHtml(state.query)}"
             autocomplete="off"
             spellcheck="false"
+            autofocus
           />
         </label>
 
         <div class="status-bar">
-          <div class="status-pill" data-tone="${escapeHtml(state.statusTone)}">${escapeHtml(state.statusText)}</div>
+          <div class="status-pill"></div>
           <button class="action-button" type="button" data-action="rescan">Rescan</button>
         </div>
 
-        ${state.launchError ? `<div class="error-banner">${escapeHtml(state.launchError)}</div>` : ""}
+        <div class="error-banner" hidden></div>
 
-        <div class="results">
-          ${renderResults()}
-        </div>
+        <div class="results"></div>
 
         <footer class="footer">
           <div class="footer-shortcuts">
@@ -447,37 +473,101 @@ function render() {
             <span class="shortcut"><span class="key">Esc</span> Clear / Hide</span>
             <span class="shortcut"><span class="key">⌘R</span> Rescan</span>
           </div>
-          <div class="footer-paths">${escapeHtml(state.scannedPaths.join(" · "))}</div>
+          <div class="footer-paths"></div>
         </footer>
       </section>
     </main>
   `;
 
+  ui = {
+    metaCopy: document.querySelector(".meta-copy p"),
+    searchInput: document.querySelector(".search-input"),
+    statusPill: document.querySelector(".status-pill"),
+    errorBanner: document.querySelector(".error-banner"),
+    results: document.querySelector(".results"),
+    footerPaths: document.querySelector(".footer-paths"),
+  };
+
   bindRenderedEvents();
+  focusInput({ cursorToEnd: true });
+}
+
+function render() {
+  if (!ui) {
+    renderShell();
+  }
+
+  if (ui.searchInput && (!isComposing || document.activeElement !== ui.searchInput) && ui.searchInput.value !== state.query) {
+    ui.searchInput.value = state.query;
+  }
+
+  if (ui.metaCopy) {
+    ui.metaCopy.textContent = `Last scan ${formatTime(state.lastScanAt)}`;
+  }
+
+  if (ui.statusPill) {
+    ui.statusPill.dataset.tone = state.statusTone;
+    ui.statusPill.textContent = state.statusText;
+  }
+
+  if (ui.errorBanner) {
+    ui.errorBanner.hidden = !state.launchError;
+    ui.errorBanner.textContent = state.launchError;
+  }
+
+  if (ui.results) {
+    ui.results.innerHTML = renderResults();
+  }
+
+  if (ui.footerPaths) {
+    ui.footerPaths.textContent = state.scannedPaths.join(" · ");
+  }
+
   requestAnimationFrame(() => updateActiveResult());
 }
 
 function bindRenderedEvents() {
-  document.querySelector(".search-input")?.addEventListener("input", onInput);
+  ui?.searchInput?.addEventListener("input", onInput);
+  ui?.searchInput?.addEventListener("compositionstart", onCompositionStart);
+  ui?.searchInput?.addEventListener("compositionend", onCompositionEnd);
 
-  document.querySelector('[data-action="retry"]')?.addEventListener("click", () => {
-    void rescanApplications();
+  appElement.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-action]")?.dataset.action;
+
+    if (action === "retry" || action === "rescan") {
+      void rescanApplications();
+      return;
+    }
+
+    if (action === "clear") {
+      state.query = "";
+      state.selectedIndex = 0;
+      void performSearch("");
+      return;
+    }
+
+    const row = event.target.closest(".result-row");
+    if (!row) {
+      return;
+    }
+
+    const index = Number(row.dataset.resultIndex);
+    if (Number.isNaN(index)) {
+      return;
+    }
+
+    void onResultClick(index);
   });
 
-  document.querySelector('[data-action="clear"]')?.addEventListener("click", () => {
-    state.query = "";
-    state.selectedIndex = 0;
-    void performSearch("");
-  });
+  ui?.results?.addEventListener("mouseover", (event) => {
+    const row = event.target.closest(".result-row");
+    if (!row) {
+      return;
+    }
 
-  document.querySelector('[data-action="rescan"]')?.addEventListener("click", () => {
-    void rescanApplications();
-  });
-
-  document.querySelectorAll(".result-row").forEach((row, index) => {
-    row.addEventListener("mouseenter", () => onResultHover(index));
-    row.addEventListener("click", () => {
-      void onResultClick(index);
-    });
+    const index = Number(row.dataset.resultIndex);
+    if (!Number.isNaN(index)) {
+      onResultHover(index);
+    }
   });
 }

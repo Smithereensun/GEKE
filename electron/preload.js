@@ -10,4 +10,11 @@ contextBridge.exposeInMainWorld("geke", {
   launchApplication: (appPath) => invoke("launcher:launch-application", appPath),
   rescanApplications: () => invoke("launcher:rescan-applications"),
   hideLauncher: () => invoke("launcher:hide-launcher"),
+  onWindowVisible: (callback) => {
+    if (typeof callback !== "function") {
+      return;
+    }
+
+    ipcRenderer.on("launcher:window-visible", () => callback());
+  },
 });

@@ -32,6 +32,14 @@ let activeScanPromise = null;
 
 app.setName(APP_NAME);
 
+function notifyRendererWindowVisible() {
+  if (!mainWindow || mainWindow.webContents.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("launcher:window-visible");
+}
+
 function normalizeText(value) {
   return value
     .toLowerCase()
@@ -361,6 +369,7 @@ function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
     mainWindow?.focus();
+    notifyRendererWindowVisible();
   });
 
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
@@ -391,6 +400,7 @@ function showLauncher() {
 
   mainWindow.show();
   mainWindow.focus();
+  notifyRendererWindowVisible();
 }
 
 function hideLauncher() {
