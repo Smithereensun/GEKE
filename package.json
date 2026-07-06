@@ -9,8 +9,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "clean:release": "rm -rf release",
     "app:dev": "NODE_ENV=development concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "app:build": "npm run build && electron-builder"
+    "app:build": "npm run clean:release && npm run build && electron-builder"
   },
   "dependencies": {
     "pinyin-pro": "^3.27.0"
