@@ -31,6 +31,7 @@ let lastScanAt = null;
 let activeScanPromise = null;
 
 app.setName(APP_NAME);
+const rendererEntryUrl = process.env.GEKE_DEV_SERVER_URL || DEV_SERVER_URL;
 
 function notifyRendererWindowVisible() {
   if (!mainWindow || mainWindow.webContents.isDestroyed()) {
@@ -362,7 +363,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
     },
   });
 
@@ -385,7 +386,7 @@ function createWindow() {
     return;
   }
 
-  void mainWindow.loadURL(DEV_SERVER_URL);
+  void mainWindow.loadURL(rendererEntryUrl);
 }
 
 function showLauncher() {

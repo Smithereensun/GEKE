@@ -33,7 +33,7 @@ async function initialize() {
     const payload = await launcher.getInitialApps();
     applyPayload(payload);
     state.status = "ready";
-    state.statusText = buildStatusText(payload.query, payload.results.length, payload.totalCount);
+    state.statusText = buildStatusText(state.query, payload.results.length, payload.totalCount);
     state.statusTone = "info";
   } catch (error) {
     state.status = "error";
@@ -43,7 +43,7 @@ async function initialize() {
   }
 
   render();
-  focusInput({ selectAll: true });
+  focusInput(state.query ? { cursorToEnd: true } : { selectAll: true });
 }
 
 function bindEvents() {
@@ -143,7 +143,6 @@ function buildStatusText(query, resultCount, totalCount) {
 }
 
 function applyPayload(payload) {
-  state.query = payload.query ?? "";
   state.results = Array.isArray(payload.results) ? payload.results : [];
   state.totalCount = payload.totalCount ?? 0;
   state.scannedPaths = Array.isArray(payload.scannedPaths) ? payload.scannedPaths : [];
@@ -203,7 +202,7 @@ async function performSearch(query) {
 
     applyPayload(payload);
     state.status = "ready";
-    state.statusText = buildStatusText(payload.query, payload.results.length, payload.totalCount);
+    state.statusText = buildStatusText(query, payload.results.length, payload.totalCount);
     state.statusTone = "info";
   } catch (error) {
     if (currentToken !== requestToken) {
@@ -262,6 +261,7 @@ async function handleEscape() {
   if (state.query) {
     state.query = "";
     state.selectedIndex = 0;
+    syncInputValue({ force: true });
     await performSearch("");
     return;
   }
@@ -492,14 +492,23 @@ function renderShell() {
   focusInput({ cursorToEnd: true });
 }
 
+function syncInputValue({ force = false } = {}) {
+  if (!ui?.searchInput || ui.searchInput.value === state.query) {
+    return;
+  }
+
+  const inputIsActive = document.activeElement === ui.searchInput;
+  if (force || (!inputIsActive && !isComposing)) {
+    ui.searchInput.value = state.query;
+  }
+}
+
 function render() {
   if (!ui) {
     renderShell();
   }
 
-  if (ui.searchInput && (!isComposing || document.activeElement !== ui.searchInput) && ui.searchInput.value !== state.query) {
-    ui.searchInput.value = state.query;
-  }
+  syncInputValue();
 
   if (ui.metaCopy) {
     ui.metaCopy.textContent = `Last scan ${formatTime(state.lastScanAt)}`;
@@ -542,6 +551,7 @@ function bindRenderedEvents() {
     if (action === "clear") {
       state.query = "";
       state.selectedIndex = 0;
+      syncInputValue({ force: true });
       void performSearch("");
       return;
     }

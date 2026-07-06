@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "verify:renderer-input": "node scripts/verify-renderer-input.mjs",
     "clean:release": "rm -rf release",
     "app:dev": "NODE_ENV=development concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "app:build": "npm run clean:release && npm run build && electron-builder"
@@ -20,6 +21,7 @@
     "concurrently": "^9.2.1",
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
+    "jsdom": "^29.1.1",
     "vite": "^7.1.1",
     "wait-on": "^8.0.5"
   },
