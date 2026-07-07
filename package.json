@@ -1,52 +1,27 @@
 {
   "name": "geke-launcher",
   "version": "1.0.0",
-  "description": "Raycast-style macOS app launcher built with Electron and Vite.",
+  "description": "Raycast-style macOS app launcher built with Tauri and Vite.",
   "author": "Smithereensun",
   "private": true,
   "type": "module",
-  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/verify-build-output.mjs",
     "verify:renderer-input": "node scripts/verify-renderer-input.mjs",
+    "verify:screenshot-ui": "node scripts/verify-screenshot-ui.mjs",
     "clean:release": "rm -rf release",
-    "app:dev": "NODE_ENV=development concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "app:build": "npm run clean:release && npm run build && electron-builder"
+    "copy:release": "node scripts/copy-tauri-release.mjs",
+    "app:dev": "tauri dev",
+    "app:build": "npm run clean:release && tauri build && npm run copy:release",
+    "app:build:screenshot-levels": "node scripts/build-screenshot-level-variants.mjs"
   },
   "dependencies": {
     "pinyin-pro": "^3.27.0"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1",
-    "electron": "^37.2.6",
-    "electron-builder": "^26.0.12",
+    "@tauri-apps/cli": "^2.11.4",
     "jsdom": "^29.1.1",
-    "vite": "^7.1.1",
-    "wait-on": "^8.0.5"
-  },
-  "build": {
-    "appId": "com.smithereensun.geke",
-    "productName": "极刻 GEKE",
-    "electronDist": "node_modules/electron/dist",
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "asar": true,
-    "mac": {
-      "icon": "build/icon.icns",
-      "category": "public.app-category.productivity",
-      "target": [
-        "dir",
-        "zip"
-      ],
-      "artifactName": "GEKE-${version}-${arch}.${ext}"
-    }
+    "vite": "^7.1.1"
   }
 }

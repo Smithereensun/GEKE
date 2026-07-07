@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="154" y1="72" x2="888" y2="946" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f8fdff"/>
+      <stop offset=".28" stop-color="#7ccfff"/>
+      <stop offset=".68" stop-color="#1f66e9"/>
+      <stop offset="1" stop-color="#0c2f9c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(380 360 -360 380 352 258)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff" stop-opacity=".72"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="214" y1="320" x2="800" y2="698" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" stop-opacity=".42"/>
+      <stop offset=".46" stop-color="#e9fbff" stop-opacity=".19"/>
+      <stop offset="1" stop-color="#bdefff" stop-opacity=".28"/>
+    </linearGradient>
+    <filter id="blur" x="130" y="250" width="764" height="540" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="dotGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="56" y="56" width="912" height="912" rx="220" fill="url(#bg)"/>
+  <rect x="56" y="56" width="912" height="912" rx="220" fill="url(#glow)"/>
+  <rect x="184" y="318" width="656" height="392" rx="92" fill="#dff8ff" opacity=".35" filter="url(#blur)"/>
+  <rect x="184" y="318" width="656" height="392" rx="92" fill="url(#glass)" stroke="#7ee4ff" stroke-width="14"/>
+  <path d="M218 348h588v128H218z" fill="#fff" opacity=".13"/>
+  <path d="M344 438l112 82-112 82" fill="none" stroke="#fbfeff" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M500 604h176" fill="none" stroke="#dafeff" stroke-width="28" stroke-linecap="round"/>
+  <path d="M604 466l116 58-116 58" fill="none" stroke="#123f9d" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" opacity=".84"/>
+  <g filter="url(#dotGlow)" fill="#fff">
+    <circle cx="604" cy="466" r="22"/>
+    <circle cx="720" cy="524" r="22"/>
+    <circle cx="604" cy="582" r="22"/>
+  </g>
+</svg>

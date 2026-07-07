@@ -1,0 +1,27 @@
+[package]
+name = "geke"
+version = "1.0.0"
+description = "Raycast-style macOS app launcher."
+authors = ["Smithereensun"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+core-foundation = "0.10"
+core-graphics = { version = "0.25", features = ["highsierra"] }
+dirs-next = "2"
+icns = "0.4"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSWindow", "NSScreen"] }
+plist = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-opener = "2"
