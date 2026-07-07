@@ -10,7 +10,6 @@ use std::{
   process::{Command, Stdio},
   str::FromStr,
   sync::{
-    atomic::{AtomicBool, Ordering},
     mpsc, Arc, Mutex,
   },
   thread,
@@ -28,7 +27,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, S
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
 
 #[cfg(target_os = "macos")]
-use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::runloop::CFRunLoop;
 
 #[cfg(target_os = "macos")]
 use core_graphics::{
@@ -44,7 +43,7 @@ use core_graphics::{
 use objc2::MainThreadMarker;
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
+use objc2_app_kit::{NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
 
 const APP_NAME: &str = "极刻 GEKE";
 const DEFAULT_TOGGLE_SHORTCUT: &str = "Alt+Space";
@@ -112,12 +111,7 @@ struct WakeRuntime {
 struct ScreenshotSessionState {
   current: Option<ScreenshotSession>,
   starting: bool,
-}
-
-#[derive(Default)]
-struct ScreenshotRuntimeState {
-  #[cfg(target_os = "macos")]
-  pointer_monitor_stop: Option<Arc<AtomicBool>>,
+  window_ready: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -284,14 +278,6 @@ struct ScreenshotSelection {
 struct ScreenshotCompletePayload {
   saved_path: Option<String>,
   copied: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ScreenshotPointerEventPayload {
-  event_type: String,
-  x: f64,
-  y: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1137,10 +1123,6 @@ fn priority_permission_error() -> String {
   "开启“优先极刻快捷键”需要给极刻键盘监听权限。请在系统设置 > 隐私与安全性 > 输入监控/辅助功能中允许极刻，然后再试一次。".to_string()
 }
 
-fn screenshot_pointer_permission_error() -> String {
-  "菜单栏截图需要给极刻输入监控/辅助功能权限。请在系统设置 > 隐私与安全性 > 输入监控/辅助功能中允许极刻，然后退出并重新打开极刻再试一次。".to_string()
-}
-
 fn screen_recording_permission_error() -> String {
   "截图需要屏幕录制权限。请在功能权限里打开“屏幕录制权限”；如果刚刚已经授权，请退出并重新打开极刻后再试一次。".to_string()
 }
@@ -1174,32 +1156,6 @@ fn open_priority_permission_settings_window() -> Result<bool, String> {
 #[tauri::command]
 fn open_priority_permission_settings() -> Result<bool, String> {
   open_priority_permission_settings_window()
-}
-
-#[cfg(target_os = "macos")]
-fn open_screenshot_pointer_permission_settings_window() -> Result<bool, String> {
-  let urls = [
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
-  ];
-
-  for url in urls {
-    let status = Command::new("/usr/bin/open")
-      .arg(url)
-      .status()
-      .map_err(|error| error.to_string())?;
-
-    if status.success() {
-      return Ok(true);
-    }
-  }
-
-  Err("无法打开系统授权设置。".to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn open_screenshot_pointer_permission_settings_window() -> Result<bool, String> {
-  Err("当前系统不支持打开 macOS 授权设置。".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -1505,7 +1461,6 @@ fn trigger_screenshot_shortcut(app: AppHandle) {
       state.settings.screenshot_plugin.clone()
     };
     if let Err(error) = run_screenshot_capture(&app, plugin) {
-      show_launcher(&app);
       let _ = app.emit("launcher:screenshot-error", error);
     }
   });
@@ -2167,8 +2122,7 @@ fn run_screenshot_capture(app: &AppHandle, plugin: ScreenshotPluginSettings) -> 
     return Ok(false);
   }
 
-  hide_screenshot_window(app);
-  thread::sleep(Duration::from_millis(8));
+  close_screenshot_window_and_wait(app, Duration::from_millis(700));
 
   if !screen_recording_permission_granted() {
     finish_screenshot_start(app);
@@ -2232,13 +2186,14 @@ fn run_screenshot_capture(app: &AppHandle, plugin: ScreenshotPluginSettings) -> 
     if let Some(session_state) = app.try_state::<Mutex<ScreenshotSessionState>>() {
       if let Ok(mut session_state) = session_state.lock() {
         session_state.current = None;
+        session_state.window_ready = false;
       }
     }
-    let _ = open_screenshot_pointer_permission_settings_window();
     return Err(error);
   }
   match open_screenshot_window_on_main_thread(app) {
     Ok(value) => {
+      schedule_screenshot_ready_watchdog(app);
       finish_screenshot_start(app);
       Ok(value)
     }
@@ -2247,6 +2202,7 @@ fn run_screenshot_capture(app: &AppHandle, plugin: ScreenshotPluginSettings) -> 
         if let Ok(mut session_state) = session_state.lock() {
           session_state.current = None;
           session_state.starting = false;
+          session_state.window_ready = false;
         }
       }
       exit_screenshot_capture_mode(app);
@@ -2282,6 +2238,7 @@ fn begin_screenshot_start(app: &AppHandle) -> Result<bool, String> {
   }
   session_state.starting = true;
   session_state.current = None;
+  session_state.window_ready = false;
   Ok(true)
 }
 
@@ -2291,6 +2248,47 @@ fn finish_screenshot_start(app: &AppHandle) {
       session_state.starting = false;
     }
   }
+}
+
+fn screenshot_capture_is_active_or_starting(app: &AppHandle) -> bool {
+  app
+    .try_state::<Mutex<ScreenshotSessionState>>()
+    .and_then(|session_state| {
+      session_state
+        .lock()
+        .ok()
+        .map(|session_state| session_state.starting || session_state.current.is_some())
+    })
+    .unwrap_or(false)
+}
+
+fn schedule_screenshot_ready_watchdog(app: &AppHandle) {
+  let app = app.clone();
+  thread::spawn(move || {
+    thread::sleep(Duration::from_secs(3));
+    let should_cancel = app
+      .try_state::<Mutex<ScreenshotSessionState>>()
+      .and_then(|session_state| {
+        session_state.lock().ok().map(|session_state| {
+          session_state.current.is_some() && !session_state.window_ready
+        })
+      })
+      .unwrap_or(false);
+    if !should_cancel {
+      return;
+    }
+
+    if let Some(session_state) = app.try_state::<Mutex<ScreenshotSessionState>>() {
+      if let Ok(mut session_state) = session_state.lock() {
+        session_state.current = None;
+        session_state.starting = false;
+        session_state.window_ready = false;
+      }
+    }
+    hide_screenshot_window(&app);
+    exit_screenshot_capture_mode(&app);
+    let _ = app.emit("launcher:screenshot-error", "截图窗口没有正常显示，已自动退出截图模式。");
+  });
 }
 
 #[cfg(target_os = "macos")]
@@ -2311,8 +2309,8 @@ fn restore_window_visibility_for_capture(window: &tauri::WebviewWindow) {
 fn restore_window_visibility_for_capture(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "macos")]
-fn enter_screenshot_capture_mode(app: &AppHandle) -> Result<(), String> {
-  start_screenshot_pointer_monitor(app)
+fn enter_screenshot_capture_mode(_app: &AppHandle) -> Result<(), String> {
+  Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2321,222 +2319,10 @@ fn enter_screenshot_capture_mode(_app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn exit_screenshot_capture_mode(app: &AppHandle) {
-  stop_screenshot_pointer_monitor(app);
-}
+fn exit_screenshot_capture_mode(_app: &AppHandle) {}
 
 #[cfg(not(target_os = "macos"))]
 fn exit_screenshot_capture_mode(_app: &AppHandle) {}
-
-#[cfg(target_os = "macos")]
-fn start_screenshot_pointer_monitor(app: &AppHandle) -> Result<(), String> {
-  stop_screenshot_pointer_monitor(app);
-  if !request_priority_shortcut_access() {
-    return Err(screenshot_pointer_permission_error());
-  }
-
-  let Some(runtime_state) = app.try_state::<Mutex<ScreenshotRuntimeState>>() else {
-    return Err("截图运行状态不可用。".to_string());
-  };
-  let stop_signal = Arc::new(AtomicBool::new(false));
-  let (ready_sender, ready_receiver) = mpsc::channel::<Result<(), String>>();
-  let ready_sender = Arc::new(Mutex::new(Some(ready_sender)));
-
-  let app_for_thread = app.clone();
-  let stop_signal_for_thread = stop_signal.clone();
-  let ready_for_thread = ready_sender.clone();
-  thread::spawn(move || {
-    let app_for_callback = app_for_thread.clone();
-    let stop_for_callback = stop_signal_for_thread.clone();
-    let stop_for_loop = stop_signal_for_thread.clone();
-    let ready_for_loop = ready_for_thread.clone();
-    let ready_for_failure = ready_for_thread.clone();
-    let menu_bar_drag_active = Arc::new(AtomicBool::new(false));
-    let menu_bar_drag_for_callback = menu_bar_drag_active.clone();
-    let last_move_emitted_at = Arc::new(Mutex::new(Instant::now() - Duration::from_millis(40)));
-    let last_move_for_callback = last_move_emitted_at.clone();
-
-    let tap_result = CGEventTap::with_enabled(
-      CGEventTapLocation::HID,
-      CGEventTapPlacement::HeadInsertEventTap,
-      CGEventTapOptions::Default,
-      vec![
-        CGEventType::LeftMouseDown,
-        CGEventType::LeftMouseDragged,
-        CGEventType::LeftMouseUp,
-        CGEventType::MouseMoved,
-        CGEventType::KeyDown,
-      ],
-      move |_proxy, event_type, event| {
-        if matches!(event_type, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
-          return CallbackResult::Keep;
-        }
-        if stop_for_callback.load(Ordering::Relaxed) {
-          return CallbackResult::Keep;
-        }
-
-        if matches!(event_type, CGEventType::KeyDown)
-          && event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as CGKeyCode == KeyCode::ESCAPE
-        {
-          let _ = app_for_callback.emit(
-            "screenshot:global-pointer",
-            ScreenshotPointerEventPayload {
-              event_type: "cancel".to_string(),
-              x: 0.0,
-              y: 0.0,
-            },
-          );
-          return CallbackResult::Drop;
-        }
-
-        let Some(payload) = screenshot_pointer_payload(&app_for_callback, event_type, event) else {
-          return CallbackResult::Keep;
-        };
-        let in_menu_bar_area = payload.y <= 72.0;
-
-        match event_type {
-          CGEventType::LeftMouseDown => {
-            if !in_menu_bar_area {
-              return CallbackResult::Keep;
-            }
-            menu_bar_drag_for_callback.store(true, Ordering::Relaxed);
-            let _ = app_for_callback.emit("screenshot:global-pointer", payload);
-            CallbackResult::Drop
-          }
-          CGEventType::LeftMouseDragged => {
-            if !menu_bar_drag_for_callback.load(Ordering::Relaxed) && !in_menu_bar_area {
-              return CallbackResult::Keep;
-            }
-            if should_emit_pointer_move(&last_move_for_callback) {
-              let _ = app_for_callback.emit("screenshot:global-pointer", payload);
-            }
-            if in_menu_bar_area {
-              CallbackResult::Drop
-            } else {
-              CallbackResult::Keep
-            }
-          }
-          CGEventType::LeftMouseUp => {
-            let was_menu_bar_drag = menu_bar_drag_for_callback.swap(false, Ordering::Relaxed);
-            if !was_menu_bar_drag && !in_menu_bar_area {
-              return CallbackResult::Keep;
-            }
-            let _ = app_for_callback.emit("screenshot:global-pointer", payload);
-            if was_menu_bar_drag || in_menu_bar_area {
-              CallbackResult::Drop
-            } else {
-              CallbackResult::Keep
-            }
-          }
-          CGEventType::MouseMoved => {
-            if in_menu_bar_area && should_emit_pointer_move(&last_move_for_callback) {
-              let _ = app_for_callback.emit("screenshot:global-pointer", payload);
-            }
-            CallbackResult::Keep
-          }
-          _ => CallbackResult::Keep,
-        }
-      },
-      move || {
-        if let Ok(mut sender) = ready_for_loop.lock() {
-          if let Some(sender) = sender.take() {
-            let _ = sender.send(Ok(()));
-          }
-        }
-        while !stop_for_loop.load(Ordering::Relaxed) {
-          unsafe {
-            CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, Duration::from_millis(50), false);
-          }
-        }
-      },
-    );
-
-    if tap_result.is_err() {
-      if let Ok(mut sender) = ready_for_failure.lock() {
-        if let Some(sender) = sender.take() {
-          let _ = sender.send(Err(screenshot_pointer_permission_error()));
-        }
-      }
-    }
-  });
-
-  match ready_receiver.recv_timeout(Duration::from_millis(1200)) {
-    Ok(Ok(())) => {
-      let mut state = runtime_state.lock().map_err(|error| error.to_string())?;
-      state.pointer_monitor_stop = Some(stop_signal);
-      Ok(())
-    }
-    Ok(Err(error)) => Err(error),
-    Err(_) => Err(screenshot_pointer_permission_error()),
-  }
-}
-
-#[cfg(target_os = "macos")]
-fn stop_screenshot_pointer_monitor(app: &AppHandle) {
-  if let Some(runtime_state) = app.try_state::<Mutex<ScreenshotRuntimeState>>() {
-    if let Ok(mut state) = runtime_state.lock() {
-      if let Some(stop_signal) = state.pointer_monitor_stop.take() {
-        stop_signal.store(true, Ordering::Relaxed);
-      }
-    }
-  }
-}
-
-#[cfg(target_os = "macos")]
-fn should_emit_pointer_move(last_move_emitted_at: &Arc<Mutex<Instant>>) -> bool {
-  let now = Instant::now();
-  let Ok(mut last_move_emitted_at) = last_move_emitted_at.lock() else {
-    return true;
-  };
-  if now.duration_since(*last_move_emitted_at) < Duration::from_millis(12) {
-    return false;
-  }
-  *last_move_emitted_at = now;
-  true
-}
-
-#[cfg(target_os = "macos")]
-fn screenshot_pointer_payload(
-  app: &AppHandle,
-  event_type: CGEventType,
-  event: &CGEvent,
-) -> Option<ScreenshotPointerEventPayload> {
-  let location = event.location();
-  let (origin_x, origin_y, width, height) = screenshot_window_geometry(app);
-  let mut x = location.x - origin_x;
-  let mut y = location.y - origin_y;
-  if x > width + 8.0 || y > height + 8.0 {
-    if let Some(scale) = screenshot_window_scale(app).filter(|scale| *scale > 1.0) {
-      x = (location.x / scale) - origin_x;
-      y = (location.y / scale) - origin_y;
-    }
-  }
-
-  Some(ScreenshotPointerEventPayload {
-    event_type: match event_type {
-      CGEventType::LeftMouseDown => "down",
-      CGEventType::LeftMouseDragged => "drag",
-      CGEventType::LeftMouseUp => "up",
-      CGEventType::MouseMoved => "move",
-      _ => return None,
-    }
-    .to_string(),
-    x: x.clamp(0.0, width.max(1.0)),
-    y: y.clamp(0.0, height.max(1.0)),
-  })
-}
-
-#[cfg(target_os = "macos")]
-fn screenshot_window_scale(app: &AppHandle) -> Option<f64> {
-  app.get_webview_window("main").and_then(|window| {
-    window
-      .current_monitor()
-      .ok()
-      .flatten()
-      .or_else(|| window.primary_monitor().ok().flatten())
-      .map(|monitor| monitor.scale_factor().max(1.0))
-  })
-}
 
 fn capture_full_screen_image() -> Result<PathBuf, String> {
   let timestamp = now_iso().replace(':', "-").replace('T', "-").replace('Z', "");
@@ -2567,10 +2353,8 @@ fn png_dimensions(path: &Path) -> Result<(u32, u32), String> {
 }
 
 fn open_screenshot_window(app: &AppHandle) -> Result<bool, String> {
-  if let Some(window) = app.get_webview_window("screenshot") {
-    configure_screenshot_window(&window);
-    window.emit("screenshot:session-updated", ()).map_err(|error| error.to_string())?;
-    return Ok(true);
+  if app.get_webview_window("screenshot").is_some() {
+    close_screenshot_window_and_wait(app, Duration::from_millis(700));
   }
 
   let (x, y, width, height) = screenshot_window_geometry(app);
@@ -2633,8 +2417,9 @@ fn open_screenshot_window_on_main_thread(app: &AppHandle) -> Result<bool, String
 
 fn configure_screenshot_window(window: &tauri::WebviewWindow) {
   let _ = window.set_always_on_top(true);
-  let _ = window.set_focus();
-  elevate_screenshot_window(window);
+  prepare_screenshot_window(window);
+  let _ = window.show();
+  bring_screenshot_window_front(window);
 }
 
 #[cfg(target_os = "macos")]
@@ -2651,7 +2436,7 @@ fn screenshot_overlay_window_level() -> isize {
 }
 
 #[cfg(target_os = "macos")]
-fn elevate_screenshot_window(window: &tauri::WebviewWindow) {
+fn prepare_screenshot_window(window: &tauri::WebviewWindow) {
   let Ok(ns_window) = window.ns_window() else {
     return;
   };
@@ -2660,10 +2445,14 @@ fn elevate_screenshot_window(window: &tauri::WebviewWindow) {
   }
   unsafe {
     let ns_window = &*(ns_window.cast::<NSWindow>());
+    ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+    ns_window.setOpaque(false);
+    ns_window.setHasShadow(false);
     let behavior =
       NSWindowCollectionBehavior::CanJoinAllSpaces
         | NSWindowCollectionBehavior::FullScreenAuxiliary
         | NSWindowCollectionBehavior::Transient
+        | NSWindowCollectionBehavior::Stationary
         | NSWindowCollectionBehavior::IgnoresCycle;
     ns_window.setCollectionBehavior(behavior);
     ns_window.setCanHide(false);
@@ -2676,21 +2465,43 @@ fn elevate_screenshot_window(window: &tauri::WebviewWindow) {
     {
       ns_window.setFrame_display(screen.frame(), true);
     }
+  }
+}
+
+#[cfg(target_os = "macos")]
+fn bring_screenshot_window_front(window: &tauri::WebviewWindow) {
+  let Ok(ns_window) = window.ns_window() else {
+    return;
+  };
+  if ns_window.is_null() {
+    return;
+  }
+  unsafe {
+    let ns_window = &*(ns_window.cast::<NSWindow>());
     ns_window.orderFrontRegardless();
   }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn elevate_screenshot_window(_window: &tauri::WebviewWindow) {}
+fn prepare_screenshot_window(_window: &tauri::WebviewWindow) {}
+
+#[cfg(not(target_os = "macos"))]
+fn bring_screenshot_window_front(_window: &tauri::WebviewWindow) {}
 
 #[tauri::command]
 fn show_screenshot_window(app: AppHandle) -> Result<bool, String> {
   let Some(window) = app.get_webview_window("screenshot") else {
     return Ok(false);
   };
+  prepare_screenshot_window(&window);
   window.show().map_err(|error| error.to_string())?;
+  bring_screenshot_window_front(&window);
   let _ = window.set_focus();
-  elevate_screenshot_window(&window);
+  if let Some(session_state) = app.try_state::<Mutex<ScreenshotSessionState>>() {
+    if let Ok(mut session_state) = session_state.lock() {
+      session_state.window_ready = true;
+    }
+  }
   Ok(true)
 }
 
@@ -2840,6 +2651,7 @@ async fn complete_screenshot_capture(
         let mut state = state.lock().map_err(|error| error.to_string())?;
         state.current = None;
         state.starting = false;
+        state.window_ready = false;
         drop(state);
         hide_screenshot_window(&app);
         exit_screenshot_capture_mode(&app);
@@ -2863,6 +2675,7 @@ async fn complete_screenshot_capture(
     let mut state = state.lock().map_err(|error| error.to_string())?;
     state.current = None;
     state.starting = false;
+    state.window_ready = false;
     drop(state);
     hide_screenshot_window(&app);
     exit_screenshot_capture_mode(&app);
@@ -2874,6 +2687,7 @@ async fn complete_screenshot_capture(
     let mut state = state.lock().map_err(|error| error.to_string())?;
     state.current = None;
     state.starting = false;
+    state.window_ready = false;
   }
   hide_screenshot_window(&app);
   exit_screenshot_capture_mode(&app);
@@ -2903,6 +2717,7 @@ fn cancel_screenshot_capture(app: AppHandle, state: State<'_, Mutex<ScreenshotSe
     let mut state = state.lock().map_err(|error| error.to_string())?;
     state.current = None;
     state.starting = false;
+    state.window_ready = false;
   }
   hide_screenshot_window(&app);
   exit_screenshot_capture_mode(&app);
@@ -2924,6 +2739,7 @@ fn restart_screenshot_capture(
     let mut state = screenshot_state.lock().map_err(|error| error.to_string())?;
     state.current = None;
     state.starting = false;
+    state.window_ready = false;
   }
   hide_screenshot_window(&app);
   exit_screenshot_capture_mode(&app);
@@ -3057,7 +2873,6 @@ fn main() {
     .manage(wake_runtime.clone())
     .manage(Mutex::new(LauncherState::default()))
     .manage(Mutex::new(ScreenshotSessionState::default()))
-    .manage(Mutex::new(ScreenshotRuntimeState::default()))
     .invoke_handler(tauri::generate_handler![
       get_initial_apps,
       search_applications,
@@ -3141,7 +2956,9 @@ fn main() {
     .run(|app, event| {
       #[cfg(target_os = "macos")]
       if let tauri::RunEvent::Reopen { .. } = event {
-        toggle_launcher(app);
+        if !screenshot_capture_is_active_or_starting(app) {
+          toggle_launcher(app);
+        }
       }
     });
 }

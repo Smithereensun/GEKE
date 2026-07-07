@@ -8,7 +8,7 @@ const DEFAULT_SELECTION_RADIUS = 22;
 const DEFAULT_WATERMARK_TEXT = "极刻 GEKE";
 const WATERMARK_GAP_X = 180;
 const WATERMARK_GAP_Y = 92;
-const MENU_BAR_SAFE_AREA = 72;
+const TOP_EDGE_SAFE_AREA = 72;
 const SCREEN_EDGE_EPSILON = 1;
 const RECENT_SELECTION_LIMIT = 5;
 const TOOL_ITEMS = [
@@ -62,8 +62,6 @@ const state = {
   editingAnnotationId: null,
   pointer: null,
   sampler: null,
-  globalPointerDrag: false,
-  globalPointerUnlisten: null,
   sessionUpdateUnlisten: null,
   status: "",
   busy: false,
@@ -121,14 +119,17 @@ async function initialize() {
 }
 
 async function loadScreenshotSession() {
+  appElement.dataset.ready = "false";
   state.session = await bridge.getSession();
   resetCaptureState();
   applySessionSettings();
-    state.activeTool = normalizeInitialTool();
+  state.activeTool = normalizeInitialTool();
   render();
   updateSelectionDom();
   prepareColorSampler();
   await waitForScreenshotImageReady();
+  appElement.dataset.ready = "true";
+  await nextFrame();
   await bridge.ready?.();
 }
 
@@ -139,7 +140,6 @@ function resetCaptureState() {
   }
   state.selection = null;
   state.drag = null;
-  state.globalPointerDrag = false;
   state.annotations = [];
   state.undoStack = [];
   state.redoStack = [];
@@ -154,6 +154,7 @@ function resetCaptureState() {
 }
 
 async function showSessionError(error) {
+  appElement.dataset.ready = "true";
   appElement.innerHTML = `
     <div class="screenshot-error">
       <strong>无法启动截图</strong>
@@ -168,7 +169,6 @@ function bindEvents() {
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
   window.addEventListener("keydown", onKeyDown);
-  bindGlobalPointerEvents();
   bindSessionUpdateEvents();
   appElement.addEventListener("input", onEditorInput);
   appElement.addEventListener("blur", onEditorBlur, true);
@@ -206,18 +206,6 @@ function bindSessionUpdateEvents() {
     void loadScreenshotSession().catch(showSessionError);
   }).then((unlisten) => {
     state.sessionUpdateUnlisten = unlisten;
-  }).catch(() => {});
-}
-
-function bindGlobalPointerEvents() {
-  const listen = window.__TAURI__?.event?.listen;
-  if (typeof listen !== "function" || state.globalPointerUnlisten) {
-    return;
-  }
-  void listen("screenshot:global-pointer", (event) => {
-    onGlobalPointer(event.payload || {});
-  }).then((unlisten) => {
-    state.globalPointerUnlisten = unlisten;
   }).catch(() => {});
 }
 
@@ -602,10 +590,6 @@ function updateInspectorDom() {
   if (!inspector || !state.pointer) {
     return;
   }
-  if (state.pointer.y <= MENU_BAR_SAFE_AREA) {
-    inspector.dataset.visible = "false";
-    return;
-  }
   const viewport = viewportSize();
   const coordinates = pointToImagePixels(state.pointer);
   const left = state.pointer.x > viewport.width - 190 ? state.pointer.x - 166 : state.pointer.x + 18;
@@ -788,14 +772,6 @@ function pointerPosition(event) {
   };
 }
 
-function globalPointerPosition(payload) {
-  const viewport = viewportSize();
-  return {
-    x: clamp(Number(payload.x) || 0, 0, viewport.width),
-    y: clamp(Number(payload.y) || 0, 0, viewport.height),
-  };
-}
-
 function pointInSelection(point) {
   if (!state.selection) {
     return false;
@@ -831,7 +807,6 @@ function restoreHistorySnapshot(snapshot) {
   state.annotationSequence = snapshot.annotationSequence;
   state.editingAnnotationId = snapshot.editingAnnotationId;
   state.drag = null;
-  state.globalPointerDrag = false;
   updateSelectionDom();
   updateStyleDom();
 }
@@ -969,44 +944,6 @@ function onPointerMove(event) {
 
 function onPointerUp() {
   finishPointerInteraction();
-  state.globalPointerDrag = false;
-}
-
-function onGlobalPointer(payload) {
-  const point = globalPointerPosition(payload);
-  if (payload.eventType === "cancel") {
-    void cancelCapture();
-    return;
-  }
-  if (payload.eventType === "move") {
-    if (!state.drag && point.y <= MENU_BAR_SAFE_AREA) {
-      updateInspector(point);
-    }
-    return;
-  }
-
-  const target = document.elementFromPoint(point.x, point.y) || appElement;
-  if (payload.eventType === "down") {
-    if (point.y > MENU_BAR_SAFE_AREA) {
-      return;
-    }
-    state.globalPointerDrag = beginPointerInteraction(point, target);
-    return;
-  }
-
-  if (payload.eventType === "drag") {
-    if (state.globalPointerDrag || state.drag) {
-      updatePointerInteraction(point, target);
-    }
-    return;
-  }
-
-  if (payload.eventType === "up") {
-    if (state.globalPointerDrag || state.drag) {
-      finishPointerInteraction();
-      state.globalPointerDrag = false;
-    }
-  }
 }
 
 function resizeSelection(origin, handle, deltaX, deltaY) {
@@ -1577,7 +1514,7 @@ function updateSelectionDom() {
 
   const viewport = viewportSize();
   const centerX = x + width / 2;
-  const touchesTopSafeArea = y <= MENU_BAR_SAFE_AREA;
+  const touchesTopSafeArea = y <= TOP_EDGE_SAFE_AREA;
   const belowSelectionTop = y + height + 12;
   const toolbarGap = toolUsesStyle() ? 58 : 52;
   if (topbar) {

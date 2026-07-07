@@ -112,6 +112,7 @@ const script = window.document.createElement("script");
 script.textContent = screenshotSource;
 window.document.body.append(script);
 await settle(window);
+await settle(window);
 
 const stage = window.document.querySelector(".screenshot-stage");
 const selection = window.document.querySelector(".screenshot-selection");
@@ -122,7 +123,8 @@ assert(window.document.querySelector(".screenshot-toolbar"), "bottom toolbar sho
 assert(window.document.querySelector(".screenshot-stylebar"), "style toolbar should render");
 assert(window.document.querySelector(".screenshot-shades"), "screen dimming shades should render");
 assert(window.document.querySelector(".screenshot-inspector"), "pointer color inspector should render");
-assert(readyCount === 1, "screenshot window should be shown only after the UI is ready");
+assert(readyCount === 1, "screenshot window should be marked ready after the screenshot UI is ready");
+assert(window.document.querySelector("#screenshot-app").dataset.ready === "true", "screenshot stage should become visible only after the image is ready");
 assert(window.__screenshotTest.getState().selection === null, "screenshot should start without a default selection");
 assert(selection.dataset.visible === "false", "selection should be hidden before the user drags");
 assert(window.document.querySelector(".screenshot-topbar").dataset.visible === "false", "size bar should be hidden before selecting");
@@ -131,11 +133,13 @@ assert(window.document.querySelector('[data-shade="top"]').style.width === "1000
 
 window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 50, clientY: 10 }));
 await settle(window);
-assert(window.document.querySelector(".screenshot-inspector").dataset.visible === "false", "menu bar area should not show the color inspector");
+assert(window.document.querySelector(".screenshot-inspector").dataset.visible === "true", "top edge area should use the same color inspector layer");
+assert(window.document.querySelector(".screenshot-inspector-coordinates").textContent.trim() === "100, 20", "top edge inspector should show image pixel coordinates");
 
 window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 50, clientY: 60 }));
 await settle(window);
-assert(window.document.querySelector(".screenshot-inspector").dataset.visible === "false", "menu bar safe area should keep the color inspector hidden");
+assert(window.document.querySelector(".screenshot-inspector").dataset.visible === "true", "top safe area should use the same color inspector layer");
+assert(window.document.querySelector(".screenshot-inspector-coordinates").textContent.trim() === "100, 120", "top safe area inspector should show image pixel coordinates");
 
 window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 50, clientY: 90 }));
 await settle(window);

@@ -2063,12 +2063,17 @@ button {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  background: transparent;
   cursor: crosshair;
 }
 
 .screenshot-root {
   opacity: 1;
-  transition: opacity 90ms ease;
+  transition: none;
+}
+
+.screenshot-root[data-ready="false"] .screenshot-stage {
+  visibility: hidden;
 }
 
 .screenshot-root[data-finishing="true"] {
@@ -2105,9 +2110,11 @@ button {
   position: absolute;
   inset: 0;
   z-index: 0;
+  display: block;
   width: 100vw;
   height: 100vh;
   object-fit: fill;
+  opacity: 1;
   pointer-events: none;
 }
 
@@ -2127,7 +2134,6 @@ button {
 .screenshot-shades span {
   position: absolute;
   background: rgba(10, 15, 24, 0.42);
-  backdrop-filter: saturate(0.72) brightness(0.86);
 }
 
 .screenshot-selection {
