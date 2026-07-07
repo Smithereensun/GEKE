@@ -44,10 +44,7 @@ use core_graphics::{
 use objc2::MainThreadMarker;
 
 #[cfg(target_os = "macos")]
-use objc2::exception;
-
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApp, NSApplicationPresentationOptions, NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
+use objc2_app_kit::{NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
 const APP_NAME: &str = "极刻 GEKE";
 const DEFAULT_TOGGLE_SHORTCUT: &str = "Alt+Space";
@@ -121,8 +118,6 @@ struct ScreenshotSessionState {
 struct ScreenshotRuntimeState {
   #[cfg(target_os = "macos")]
   pointer_monitor_stop: Option<Arc<AtomicBool>>,
-  #[cfg(target_os = "macos")]
-  presentation_options_before_capture: Option<NSApplicationPresentationOptions>,
 }
 
 #[derive(Debug, Clone)]
@@ -1142,6 +1137,10 @@ fn priority_permission_error() -> String {
   "开启“优先极刻快捷键”需要给极刻键盘监听权限。请在系统设置 > 隐私与安全性 > 输入监控/辅助功能中允许极刻，然后再试一次。".to_string()
 }
 
+fn screenshot_pointer_permission_error() -> String {
+  "菜单栏截图需要给极刻输入监控/辅助功能权限。请在系统设置 > 隐私与安全性 > 输入监控/辅助功能中允许极刻，然后退出并重新打开极刻再试一次。".to_string()
+}
+
 fn screen_recording_permission_error() -> String {
   "截图需要屏幕录制权限。请在功能权限里打开“屏幕录制权限”；如果刚刚已经授权，请退出并重新打开极刻后再试一次。".to_string()
 }
@@ -1175,6 +1174,32 @@ fn open_priority_permission_settings_window() -> Result<bool, String> {
 #[tauri::command]
 fn open_priority_permission_settings() -> Result<bool, String> {
   open_priority_permission_settings_window()
+}
+
+#[cfg(target_os = "macos")]
+fn open_screenshot_pointer_permission_settings_window() -> Result<bool, String> {
+  let urls = [
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+  ];
+
+  for url in urls {
+    let status = Command::new("/usr/bin/open")
+      .arg(url)
+      .status()
+      .map_err(|error| error.to_string())?;
+
+    if status.success() {
+      return Ok(true);
+    }
+  }
+
+  Err("无法打开系统授权设置。".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_screenshot_pointer_permission_settings_window() -> Result<bool, String> {
+  Err("当前系统不支持打开 macOS 授权设置。".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -2202,7 +2227,16 @@ fn run_screenshot_capture(app: &AppHandle, plugin: ScreenshotPluginSettings) -> 
     });
   }
 
-  enter_screenshot_capture_mode(app);
+  if let Err(error) = enter_screenshot_capture_mode(app) {
+    finish_screenshot_start(app);
+    if let Some(session_state) = app.try_state::<Mutex<ScreenshotSessionState>>() {
+      if let Ok(mut session_state) = session_state.lock() {
+        session_state.current = None;
+      }
+    }
+    let _ = open_screenshot_pointer_permission_settings_window();
+    return Err(error);
+  }
   match open_screenshot_window_on_main_thread(app) {
     Ok(value) => {
       finish_screenshot_start(app);
@@ -2277,128 +2311,52 @@ fn restore_window_visibility_for_capture(window: &tauri::WebviewWindow) {
 fn restore_window_visibility_for_capture(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "macos")]
-fn enter_screenshot_capture_mode(app: &AppHandle) {
-  hide_menu_bar_for_screenshot(app);
-  let _ = start_screenshot_pointer_monitor(app);
+fn enter_screenshot_capture_mode(app: &AppHandle) -> Result<(), String> {
+  start_screenshot_pointer_monitor(app)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn enter_screenshot_capture_mode(_app: &AppHandle) {}
+fn enter_screenshot_capture_mode(_app: &AppHandle) -> Result<(), String> {
+  Ok(())
+}
 
 #[cfg(target_os = "macos")]
 fn exit_screenshot_capture_mode(app: &AppHandle) {
   stop_screenshot_pointer_monitor(app);
-  restore_menu_bar_after_screenshot(app);
 }
 
 #[cfg(not(target_os = "macos"))]
 fn exit_screenshot_capture_mode(_app: &AppHandle) {}
 
 #[cfg(target_os = "macos")]
-fn hide_menu_bar_for_screenshot(app: &AppHandle) {
-  let app_for_main = app.clone();
-  let (sender, receiver) = mpsc::channel();
-  if app
-    .run_on_main_thread(move || {
-      let _ = sender.send(set_screenshot_presentation_options(&app_for_main));
-    })
-    .is_ok()
-  {
-    let _ = receiver.recv_timeout(Duration::from_millis(900));
-  }
-}
-
-#[cfg(target_os = "macos")]
-fn set_screenshot_presentation_options(app: &AppHandle) -> Result<(), String> {
-  let Some(mtm) = MainThreadMarker::new() else {
-    return Ok(());
-  };
-  let ns_app = NSApp(mtm);
-  let previous_options = ns_app.presentationOptions();
-
-  if let Some(runtime_state) = app.try_state::<Mutex<ScreenshotRuntimeState>>() {
-    if let Ok(mut state) = runtime_state.lock() {
-      if state.presentation_options_before_capture.is_none() {
-        state.presentation_options_before_capture = Some(previous_options);
-      }
-    }
-  }
-
-  let mut options = previous_options;
-  options.remove(NSApplicationPresentationOptions::AutoHideDock);
-  options.remove(NSApplicationPresentationOptions::AutoHideMenuBar);
-  options.insert(NSApplicationPresentationOptions::HideDock);
-  options.insert(NSApplicationPresentationOptions::HideMenuBar);
-
-  exception::catch(std::panic::AssertUnwindSafe(|| {
-    ns_app.setPresentationOptions(options);
-  }))
-  .map_err(|error| format!("无法进入截图菜单栏模式：{error:?}"))?;
-  Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn restore_menu_bar_after_screenshot(app: &AppHandle) {
-  let previous_options = app
-    .try_state::<Mutex<ScreenshotRuntimeState>>()
-    .and_then(|runtime_state| {
-      let mut state = runtime_state.lock().ok()?;
-      state.presentation_options_before_capture.take()
-    });
-  let Some(previous_options) = previous_options else {
-    return;
-  };
-
-  let (sender, receiver) = mpsc::channel();
-  if app
-    .run_on_main_thread(move || {
-      let _ = sender.send(restore_application_presentation_options(previous_options));
-    })
-    .is_ok()
-  {
-    let _ = receiver.recv_timeout(Duration::from_millis(900));
-  }
-}
-
-#[cfg(target_os = "macos")]
-fn restore_application_presentation_options(options: NSApplicationPresentationOptions) -> Result<(), String> {
-  let Some(mtm) = MainThreadMarker::new() else {
-    return Ok(());
-  };
-  let ns_app = NSApp(mtm);
-  exception::catch(std::panic::AssertUnwindSafe(|| {
-    ns_app.setPresentationOptions(options);
-  }))
-  .map_err(|error| format!("无法恢复截图菜单栏模式：{error:?}"))?;
-  Ok(())
-}
-
-#[cfg(target_os = "macos")]
 fn start_screenshot_pointer_monitor(app: &AppHandle) -> Result<(), String> {
   stop_screenshot_pointer_monitor(app);
-  if !priority_shortcut_access_granted() {
-    return Err(priority_permission_error());
+  if !request_priority_shortcut_access() {
+    return Err(screenshot_pointer_permission_error());
   }
 
   let Some(runtime_state) = app.try_state::<Mutex<ScreenshotRuntimeState>>() else {
     return Err("截图运行状态不可用。".to_string());
   };
   let stop_signal = Arc::new(AtomicBool::new(false));
-  if let Ok(mut state) = runtime_state.lock() {
-    state.pointer_monitor_stop = Some(stop_signal.clone());
-  }
+  let (ready_sender, ready_receiver) = mpsc::channel::<Result<(), String>>();
+  let ready_sender = Arc::new(Mutex::new(Some(ready_sender)));
 
   let app_for_thread = app.clone();
+  let stop_signal_for_thread = stop_signal.clone();
+  let ready_for_thread = ready_sender.clone();
   thread::spawn(move || {
     let app_for_callback = app_for_thread.clone();
-    let stop_for_callback = stop_signal.clone();
-    let stop_for_loop = stop_signal.clone();
+    let stop_for_callback = stop_signal_for_thread.clone();
+    let stop_for_loop = stop_signal_for_thread.clone();
+    let ready_for_loop = ready_for_thread.clone();
+    let ready_for_failure = ready_for_thread.clone();
     let menu_bar_drag_active = Arc::new(AtomicBool::new(false));
     let menu_bar_drag_for_callback = menu_bar_drag_active.clone();
     let last_move_emitted_at = Arc::new(Mutex::new(Instant::now() - Duration::from_millis(40)));
     let last_move_for_callback = last_move_emitted_at.clone();
 
-    let _ = CGEventTap::with_enabled(
+    let tap_result = CGEventTap::with_enabled(
       CGEventTapLocation::HID,
       CGEventTapPlacement::HeadInsertEventTap,
       CGEventTapOptions::Default,
@@ -2480,6 +2438,11 @@ fn start_screenshot_pointer_monitor(app: &AppHandle) -> Result<(), String> {
         }
       },
       move || {
+        if let Ok(mut sender) = ready_for_loop.lock() {
+          if let Some(sender) = sender.take() {
+            let _ = sender.send(Ok(()));
+          }
+        }
         while !stop_for_loop.load(Ordering::Relaxed) {
           unsafe {
             CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, Duration::from_millis(50), false);
@@ -2487,9 +2450,25 @@ fn start_screenshot_pointer_monitor(app: &AppHandle) -> Result<(), String> {
         }
       },
     );
+
+    if tap_result.is_err() {
+      if let Ok(mut sender) = ready_for_failure.lock() {
+        if let Some(sender) = sender.take() {
+          let _ = sender.send(Err(screenshot_pointer_permission_error()));
+        }
+      }
+    }
   });
 
-  Ok(())
+  match ready_receiver.recv_timeout(Duration::from_millis(1200)) {
+    Ok(Ok(())) => {
+      let mut state = runtime_state.lock().map_err(|error| error.to_string())?;
+      state.pointer_monitor_stop = Some(stop_signal);
+      Ok(())
+    }
+    Ok(Err(error)) => Err(error),
+    Err(_) => Err(screenshot_pointer_permission_error()),
+  }
 }
 
 #[cfg(target_os = "macos")]
@@ -2654,8 +2633,8 @@ fn open_screenshot_window_on_main_thread(app: &AppHandle) -> Result<bool, String
 
 fn configure_screenshot_window(window: &tauri::WebviewWindow) {
   let _ = window.set_always_on_top(true);
-  elevate_screenshot_window(window);
   let _ = window.set_focus();
+  elevate_screenshot_window(window);
 }
 
 #[cfg(target_os = "macos")]
@@ -2711,6 +2690,7 @@ fn show_screenshot_window(app: AppHandle) -> Result<bool, String> {
   };
   window.show().map_err(|error| error.to_string())?;
   let _ = window.set_focus();
+  elevate_screenshot_window(&window);
   Ok(true)
 }
 
