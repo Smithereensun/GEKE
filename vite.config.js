@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         screenshot: resolve(__dirname, "screenshot.html"),
+        pin: resolve(__dirname, "pin.html"),
       },
     },
   },

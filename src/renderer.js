@@ -12,6 +12,7 @@ const DEFAULT_RESCAN_SHORTCUT = "CmdOrCtrl+R";
 const DEFAULT_SEARCH_MODE = "all";
 const DEFAULT_PREFER_GEKE_SHORTCUTS = true;
 const DEFAULT_ANIMATION_MODE = "smooth";
+const DEFAULT_PIN_HISTORY_LIMIT = 50;
 const PATH_PERMISSION_COLLAPSED_LIMIT = 3;
 const SETTINGS_MESSAGE_DISMISS_MS = 2200;
 const SETTINGS_ERROR_DISMISS_MS = 4200;
@@ -33,9 +34,10 @@ const ANIMATION_OPTIONS = [
   { value: "none", labelKey: "animationNone" },
 ];
 const DEFAULT_SCREENSHOT_SHORTCUT = "CmdOrCtrl+Shift+S";
+const DEFAULT_PIN_RESTORE_SHORTCUT = "CmdOrCtrl+Shift+P";
 const SCREENSHOT_TOOLS = [
-  { id: "move", icon: "⌁", labelKey: "screenshotToolMove", shortcut: "V" },
-  { id: "note", icon: "▱", labelKey: "screenshotToolNote", shortcut: "1" },
+  { id: "move", icon: "↕", labelKey: "screenshotToolMove", shortcut: "V" },
+  { id: "note", icon: "✎", labelKey: "screenshotToolNote", shortcut: "1" },
   { id: "step", icon: "①", labelKey: "screenshotToolStep", shortcut: "2" },
   { id: "rectangle", icon: "□", labelKey: "screenshotToolRectangle", shortcut: "3" },
   { id: "circle", icon: "○", labelKey: "screenshotToolCircle", shortcut: "4" },
@@ -63,6 +65,7 @@ const DEFAULT_SCREENSHOT_PLUGIN = {
   installed: false,
   enabled: true,
   shortcut: DEFAULT_SCREENSHOT_SHORTCUT,
+  pinRestoreShortcut: DEFAULT_PIN_RESTORE_SHORTCUT,
   defaultTool: "",
   toolShortcuts: Object.fromEntries(SCREENSHOT_ACTIONS.map((item) => [item.id, { shortcut: item.shortcut, enabled: true }])),
   fileNameFormat: "极刻截图_yyyy-MM-dd_HH-mm-ss.png",
@@ -79,6 +82,7 @@ const DEFAULT_SCREENSHOT_PLUGIN = {
   roundedCorners: true,
   shadow: true,
   pinPosition: "mouse",
+  pinHistoryLimit: DEFAULT_PIN_HISTORY_LIMIT,
   guides: false,
 };
 const SETTINGS_SECTIONS = [
@@ -235,6 +239,7 @@ const COPY = {
     screenshotPlugin: "截图",
     screenshotPluginDescription: "交互式截图插件，支持独立设置、独立快捷键和保存策略。",
     screenshotCaptureCommand: "区域截图",
+    screenshotRestorePinnedImage: "恢复最近钉图",
     screenshotDefaultTool: "默认标注工具",
     screenshotShortcutSection: "工具与快捷键",
     screenshotShortcutDescription: "关闭后隐藏截图框工具栏按钮，对应快捷键也会停用。",
@@ -272,6 +277,20 @@ const COPY = {
     screenshotPinPosition: "钉图位置",
     screenshotPinMouse: "截图原位置",
     screenshotPinTopRight: "屏幕右上角",
+    screenshotPinHistory: "钉图历史",
+    screenshotPinHistoryDescription: "保存最近钉过的图片，可删除、添加或重新钉回屏幕。",
+    screenshotPinHistoryLimit: "历史数量上限",
+    screenshotPinHistoryLimitHint: "默认 50，范围 1-200。",
+    screenshotPinHistoryEmpty: "还没有钉图历史。",
+    screenshotPinHistoryLoading: "正在加载钉图历史...",
+    screenshotPinHistoryImport: "添加图片",
+    screenshotPinHistoryRestore: "钉回屏幕",
+    screenshotPinHistoryDelete: "删除",
+    screenshotPinHistoryLoaded: "钉图历史已刷新。",
+    screenshotPinHistoryImported: "图片已添加到钉图历史。",
+    screenshotPinHistoryDeleted: "钉图历史已删除。",
+    screenshotPinHistoryRestored: "图片已钉回屏幕。",
+    screenshotPinHistoryFailed: "钉图历史操作失败。",
     screenshotGuideLines: "截图辅助线",
     screenshotShowGuides: "显示辅助线",
     screenshotShowGuidesDescription: "选区时显示横竖辅助线和尺寸参考。",
@@ -472,6 +491,7 @@ const COPY = {
     screenshotPlugin: "Screenshot",
     screenshotPluginDescription: "Interactive screenshot plugin with independent settings, shortcuts, and save behavior.",
     screenshotCaptureCommand: "Capture region",
+    screenshotRestorePinnedImage: "Restore recent pin",
     screenshotDefaultTool: "Default Annotation Tool",
     screenshotShortcutSection: "Tools & Shortcuts",
     screenshotShortcutDescription: "Disabled tools are hidden from the screenshot toolbar and their shortcuts stop working.",
@@ -509,6 +529,20 @@ const COPY = {
     screenshotPinPosition: "Pinned Image Position",
     screenshotPinMouse: "Original position",
     screenshotPinTopRight: "Screen top right",
+    screenshotPinHistory: "Pinned Image History",
+    screenshotPinHistoryDescription: "Manage recently pinned images. Delete, add, or pin them back to the screen.",
+    screenshotPinHistoryLimit: "History limit",
+    screenshotPinHistoryLimitHint: "Default 50, range 1-200.",
+    screenshotPinHistoryEmpty: "No pinned image history yet.",
+    screenshotPinHistoryLoading: "Loading pinned history...",
+    screenshotPinHistoryImport: "Add Image",
+    screenshotPinHistoryRestore: "Pin Again",
+    screenshotPinHistoryDelete: "Delete",
+    screenshotPinHistoryLoaded: "Pinned history refreshed.",
+    screenshotPinHistoryImported: "Image added to pinned history.",
+    screenshotPinHistoryDeleted: "Pinned history deleted.",
+    screenshotPinHistoryRestored: "Image pinned back to the screen.",
+    screenshotPinHistoryFailed: "Pinned history action failed.",
     screenshotGuideLines: "Guides",
     screenshotShowGuides: "Show guides",
     screenshotShowGuidesDescription: "Show axis guides and size reference while selecting.",
@@ -634,6 +668,10 @@ const state = {
     actions: true,
     fixed: true,
   },
+  pinnedImageHistory: [],
+  pinnedImageHistoryLoading: false,
+  pinnedImageHistoryLoaded: false,
+  pinnedImageHistoryError: "",
   permissionPathGroupsOpen: {
     apps: false,
     files: false,
@@ -677,6 +715,14 @@ function normalizeAnimationMode(value) {
   return ANIMATION_OPTIONS.some((option) => option.value === value) ? value : DEFAULT_ANIMATION_MODE;
 }
 
+function normalizePinHistoryLimit(value) {
+  const numeric = Number.parseInt(String(value ?? DEFAULT_PIN_HISTORY_LIMIT), 10);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_PIN_HISTORY_LIMIT;
+  }
+  return Math.min(Math.max(numeric, 1), 200);
+}
+
 function normalizeScreenshotPlugin(value = {}) {
   const toolShortcuts = { ...DEFAULT_SCREENSHOT_PLUGIN.toolShortcuts };
   for (const item of SCREENSHOT_ACTIONS) {
@@ -695,6 +741,7 @@ function normalizeScreenshotPlugin(value = {}) {
     installed: Boolean(value.installed),
     enabled: value.enabled ?? DEFAULT_SCREENSHOT_PLUGIN.enabled,
     shortcut: value.shortcut || DEFAULT_SCREENSHOT_SHORTCUT,
+    pinRestoreShortcut: value.pinRestoreShortcut || DEFAULT_PIN_RESTORE_SHORTCUT,
     defaultTool: "",
     toolShortcuts,
     fileNameFormat,
@@ -702,6 +749,7 @@ function normalizeScreenshotPlugin(value = {}) {
     saveLocation: value.saveLocation || DEFAULT_SCREENSHOT_PLUGIN.saveLocation,
     saveBehavior: ["ask", "defaultFolder", "manual"].includes(value.saveBehavior) ? value.saveBehavior : DEFAULT_SCREENSHOT_PLUGIN.saveBehavior,
     pinPosition: ["mouse", "topRight"].includes(value.pinPosition) ? value.pinPosition : DEFAULT_SCREENSHOT_PLUGIN.pinPosition,
+    pinHistoryLimit: normalizePinHistoryLimit(value.pinHistoryLimit),
   };
 }
 
@@ -829,6 +877,12 @@ function bindEvents() {
       return;
     }
 
+    if (screenshotPluginIsActive() && eventMatchesShortcut(event, state.settings.screenshotPlugin.pinRestoreShortcut)) {
+      event.preventDefault();
+      void restoreRecentPinnedImage();
+      return;
+    }
+
     if (event.key === "ArrowDown") {
       event.preventDefault();
       moveSelection(1);
@@ -887,6 +941,21 @@ function createFallbackBridge() {
       throw new Error(t("launchOnlyDesktop"));
     },
     async runScreenshotPlugin() {
+      return true;
+    },
+    async restoreRecentPinnedImage() {
+      return true;
+    },
+    async listPinnedImageHistory() {
+      return [];
+    },
+    async importPinnedImageHistory() {
+      return null;
+    },
+    async deletePinnedImageHistory() {
+      return [];
+    },
+    async restorePinnedImage() {
       return true;
     },
     async selectSearchPaths() {
@@ -976,6 +1045,11 @@ function createTauriBridge() {
     launchApplication: (appPath) => invoke("launch_application", { appPath }),
     openFile: (path) => invoke("open_file", { path }),
     runScreenshotPlugin: () => invoke("run_screenshot_plugin"),
+    restoreRecentPinnedImage: () => invoke("restore_recent_pinned_image"),
+    listPinnedImageHistory: () => invoke("list_pinned_image_history"),
+    importPinnedImageHistory: () => invoke("import_pinned_image_history"),
+    deletePinnedImageHistory: (pinId) => invoke("delete_pinned_image_history", { pinId }),
+    restorePinnedImage: (pinId) => invoke("restore_pinned_image", { pinId }),
     selectSearchPaths: (kind, currentPaths = []) => invoke("select_search_paths", { kind, currentPaths }),
     authorizeCurrentSearchPaths: (currentPaths = []) => invoke("authorize_current_search_paths", { currentPaths }),
     rescanApplications: () => invoke("rescan_applications"),
@@ -1500,6 +1574,25 @@ async function runScreenshotPlugin() {
   }
 }
 
+async function restoreRecentPinnedImage() {
+  state.launchError = "";
+  state.statusText = t("screenshotRestorePinnedImage");
+  state.statusTone = "info";
+  render();
+
+  try {
+    await launcher.restoreRecentPinnedImage();
+    state.statusText = buildStatusText(state.query, state.results.length, state.totalCount);
+    state.statusTone = "info";
+  } catch (error) {
+    state.launchError = getErrorMessage(error, t("screenshotRunFailed"));
+    state.statusText = state.launchError;
+    state.statusTone = "error";
+  }
+
+  render();
+}
+
 async function launchSelected() {
   const selectedItem = state.results[state.selectedIndex];
   if (!selectedItem) {
@@ -1588,6 +1681,18 @@ function formatTime(value) {
   }
 
   return new Intl.DateTimeFormat(getLanguage(), {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "";
+  }
+  return new Intl.DateTimeFormat(getLanguage(), {
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
@@ -1875,6 +1980,13 @@ function allEditableShortcutDefinitions() {
       shortcut: state.settings.screenshotPlugin.shortcut,
       defaultShortcut: DEFAULT_SCREENSHOT_SHORTCUT,
     },
+    {
+      target: "screenshotPinRestoreShortcut",
+      group: "screenshot",
+      label: t("screenshotRestorePinnedImage"),
+      shortcut: state.settings.screenshotPlugin.pinRestoreShortcut,
+      defaultShortcut: DEFAULT_PIN_RESTORE_SHORTCUT,
+    },
   ];
   return shortcuts;
 }
@@ -1902,7 +2014,7 @@ function shortcutHasConflict(shortcut, target) {
 }
 
 function isEditableShortcutTarget(target) {
-  return target in state.settings || target === "screenshotPluginShortcut";
+  return target in state.settings || target === "screenshotPluginShortcut" || target === "screenshotPinRestoreShortcut";
 }
 
 function settingTargetForRecordingTarget(target) {
@@ -1921,6 +2033,9 @@ function draftValueForRecordingTarget(target) {
   }
   if (target === "screenshotPluginShortcut") {
     return state.settings.screenshotPlugin.shortcut;
+  }
+  if (target === "screenshotPinRestoreShortcut") {
+    return state.settings.screenshotPlugin.pinRestoreShortcut;
   }
   return target in state.settings ? state.settings[target] : "";
 }
@@ -1948,6 +2063,9 @@ function openSettings(section = "basic") {
   state.settingsSection = normalizeSettingsSection(section);
   cancelShortcutRecording({ renderAfter: false });
   render();
+  if (state.settingsSection === "plugins" && state.settings.screenshotPlugin.installed) {
+    void loadPinnedImageHistory();
+  }
 }
 
 function closeSettings() {
@@ -2093,6 +2211,8 @@ async function saveAppShortcut(target, shortcut) {
   try {
     const overrides = target === "screenshotPluginShortcut"
       ? { screenshotPlugin: { ...state.settings.screenshotPlugin, shortcut } }
+      : target === "screenshotPinRestoreShortcut"
+        ? { screenshotPlugin: { ...state.settings.screenshotPlugin, pinRestoreShortcut: shortcut } }
       : target === "toggleShortcut"
         ? { toggleShortcut: shortcut, multiWakeEnabled: true }
         : { [target]: shortcut };
@@ -2157,6 +2277,11 @@ async function resetShortcutDefaults() {
       longPressWakeModifier: DEFAULT_MODIFIER_WAKE_KEY,
       mouseWakeEnabled: false,
       preferGekeShortcuts: DEFAULT_PREFER_GEKE_SHORTCUTS,
+      screenshotPlugin: {
+        ...state.settings.screenshotPlugin,
+        shortcut: DEFAULT_SCREENSHOT_SHORTCUT,
+        pinRestoreShortcut: DEFAULT_PIN_RESTORE_SHORTCUT,
+      },
     }),
   );
   applySettings(settings);
@@ -2481,13 +2606,20 @@ async function manageScreenshotPlugin(action) {
         ? t("pluginEnabled")
         : t("pluginDisabled");
   await saveScreenshotPlugin(nextPlugin, message);
+  if (nextPlugin.installed) {
+    void loadPinnedImageHistory({ force: true });
+  }
 }
 
 async function updateScreenshotPluginSetting(key, value) {
   if (!key) {
     return;
   }
-  await saveScreenshotPlugin({ ...state.settings.screenshotPlugin, [key]: value });
+  const normalizedValue = key === "pinHistoryLimit" ? normalizePinHistoryLimit(value) : value;
+  await saveScreenshotPlugin({ ...state.settings.screenshotPlugin, [key]: normalizedValue });
+  if (key === "pinHistoryLimit") {
+    void loadPinnedImageHistory({ force: true });
+  }
 }
 
 async function updateScreenshotToolShortcut(toolId, patch) {
@@ -2502,6 +2634,95 @@ async function updateScreenshotToolShortcut(toolId, patch) {
       [toolId]: { ...tool, ...patch },
     },
   });
+}
+
+async function loadPinnedImageHistory({ force = false } = {}) {
+  if (!force && (state.pinnedImageHistoryLoaded || state.pinnedImageHistoryLoading)) {
+    return;
+  }
+  state.pinnedImageHistoryLoading = true;
+  state.pinnedImageHistoryError = "";
+  render();
+  try {
+    const history = typeof launcher.listPinnedImageHistory === "function"
+      ? await launcher.listPinnedImageHistory()
+      : [];
+    state.pinnedImageHistory = Array.isArray(history) ? history : [];
+    state.pinnedImageHistoryLoaded = true;
+  } catch (error) {
+    state.pinnedImageHistoryError = getErrorMessage(error, t("screenshotPinHistoryFailed"));
+  } finally {
+    state.pinnedImageHistoryLoading = false;
+  }
+  render();
+}
+
+async function importPinnedImageHistory() {
+  state.pinnedImageHistoryLoading = true;
+  state.pinnedImageHistoryError = "";
+  render();
+  try {
+    const imported = typeof launcher.importPinnedImageHistory === "function"
+      ? await launcher.importPinnedImageHistory()
+      : null;
+    if (imported) {
+      state.pinnedImageHistory = [
+        imported,
+        ...state.pinnedImageHistory.filter((item) => item.id !== imported.id),
+      ].slice(0, state.settings.screenshotPlugin.pinHistoryLimit);
+      state.pinnedImageHistoryLoaded = true;
+      state.settingsMessage = t("screenshotPinHistoryImported");
+      state.settingsTone = "success";
+    }
+  } catch (error) {
+    state.pinnedImageHistoryError = getErrorMessage(error, t("screenshotPinHistoryFailed"));
+    state.settingsMessage = state.pinnedImageHistoryError;
+    state.settingsTone = "error";
+  } finally {
+    state.pinnedImageHistoryLoading = false;
+  }
+  render();
+}
+
+async function deletePinnedImageHistory(pinId) {
+  if (!pinId) {
+    return;
+  }
+  state.pinnedImageHistory = state.pinnedImageHistory.filter((item) => item.id !== pinId);
+  render();
+  try {
+    const history = typeof launcher.deletePinnedImageHistory === "function"
+      ? await launcher.deletePinnedImageHistory(pinId)
+      : state.pinnedImageHistory;
+    state.pinnedImageHistory = Array.isArray(history) ? history : state.pinnedImageHistory;
+    state.pinnedImageHistoryLoaded = true;
+    state.settingsMessage = t("screenshotPinHistoryDeleted");
+    state.settingsTone = "success";
+  } catch (error) {
+    state.pinnedImageHistoryError = getErrorMessage(error, t("screenshotPinHistoryFailed"));
+    state.settingsMessage = state.pinnedImageHistoryError;
+    state.settingsTone = "error";
+    await loadPinnedImageHistory({ force: true });
+    return;
+  }
+  render();
+}
+
+async function restorePinnedImage(pinId) {
+  if (!pinId) {
+    return;
+  }
+  try {
+    if (typeof launcher.restorePinnedImage === "function") {
+      await launcher.restorePinnedImage(pinId);
+    }
+    state.settingsMessage = t("screenshotPinHistoryRestored");
+    state.settingsTone = "success";
+  } catch (error) {
+    state.settingsMessage = getErrorMessage(error, t("screenshotPinHistoryFailed"));
+    state.settingsTone = "error";
+  }
+  render();
 }
 
 async function exportSettingsConfig() {
@@ -2551,6 +2772,9 @@ function setSettingsSection(section) {
   state.settingsSection = normalizeSettingsSection(section);
   cancelShortcutRecording({ renderAfter: false });
   render();
+  if (state.settingsSection === "plugins" && state.settings.screenshotPlugin.installed) {
+    void loadPinnedImageHistory();
+  }
 }
 
 function toggleShortcutGroup(group) {
@@ -2809,13 +3033,7 @@ function renderShortcutGuide({ wakePanelMarkup = "" } = {}) {
   const screenshotGroups = [{
     id: "screenshot",
     title: t("screenshotPlugin"),
-    content: editableShortcutRows([{
-      target: "screenshotPluginShortcut",
-      group: "screenshot",
-      label: t("screenshotCaptureCommand"),
-      shortcut: state.settings.screenshotPlugin.shortcut,
-      defaultShortcut: DEFAULT_SCREENSHOT_SHORTCUT,
-    }]),
+    content: editableShortcutRows(allEditableShortcutDefinitions().filter((shortcut) => shortcut.group === "screenshot")),
   }];
   const fixedRows = fixedShortcutDefinitions()
     .map(
@@ -3119,12 +3337,17 @@ function renderWakePanelSettings({ statusTone, statusText, message, draftShortcu
 
 function renderScreenshotPluginManager() {
   const plugin = state.settings.screenshotPlugin;
+  const screenshotIcon = `
+    <span class="plugin-icon plugin-icon--screenshot" aria-hidden="true">
+      <i></i><b></b><em></em>
+    </span>
+  `;
   if (!plugin.installed) {
     return `
       <div class="screenshot-config">
         <article class="plugin-card" data-plugin-id="screenshot" data-installed="false">
           <div class="plugin-card-header">
-            <span class="plugin-icon" aria-hidden="true">SHOT</span>
+            ${screenshotIcon}
             <span class="plugin-card-copy">
               <strong>${escapeHtml(t("screenshotPlugin"))}</strong>
               <span>${escapeHtml(t("screenshotPluginDescription"))}</span>
@@ -3226,12 +3449,57 @@ function renderScreenshotPluginManager() {
       ${escapeHtml(t(option.labelKey))}
     </button>
   `).join("");
+  const historyRows = state.pinnedImageHistory.map((item) => `
+    <article class="pin-history-card" data-pin-id="${escapeHtml(item.id)}">
+      <button class="pin-history-preview" type="button" data-action="restore-pinned-image" data-pin-id="${escapeHtml(item.id)}" title="${escapeHtml(t("screenshotPinHistoryRestore"))}">
+        <img src="${escapeHtml(item.imageDataUrl || "")}" alt="" loading="lazy" />
+      </button>
+      <div class="pin-history-meta">
+        <strong>${escapeHtml(`${item.width || 0} x ${item.height || 0}`)}</strong>
+        <span>${escapeHtml(formatDateTime(item.createdAt) || item.path || "")}</span>
+      </div>
+      <div class="pin-history-actions">
+        <button class="pin-history-button" type="button" data-action="restore-pinned-image" data-pin-id="${escapeHtml(item.id)}">
+          ${escapeHtml(t("screenshotPinHistoryRestore"))}
+        </button>
+        <button class="pin-history-button pin-history-button--danger" type="button" data-action="delete-pinned-image" data-pin-id="${escapeHtml(item.id)}">
+          ${escapeHtml(t("screenshotPinHistoryDelete"))}
+        </button>
+      </div>
+    </article>
+  `).join("");
+  const historyContent = `
+    <div class="pin-history-toolbar">
+      <label class="plugin-setting-row plugin-setting-row--compact">
+        <span>
+          ${escapeHtml(t("screenshotPinHistoryLimit"))}
+          <small>${escapeHtml(t("screenshotPinHistoryLimitHint"))}</small>
+        </span>
+        <input
+          class="plugin-setting-input plugin-setting-input--number"
+          type="number"
+          min="1"
+          max="200"
+          step="1"
+          value="${escapeHtml(plugin.pinHistoryLimit)}"
+          data-screenshot-input="pinHistoryLimit"
+        />
+      </label>
+      <button class="path-save-button" type="button" data-action="import-pinned-image">
+        ${escapeHtml(t("screenshotPinHistoryImport"))}
+      </button>
+    </div>
+    ${state.pinnedImageHistoryLoading ? `<div class="pin-history-empty">${escapeHtml(t("screenshotPinHistoryLoading"))}</div>` : ""}
+    ${state.pinnedImageHistoryError ? `<div class="pin-history-error">${escapeHtml(state.pinnedImageHistoryError)}</div>` : ""}
+    ${!state.pinnedImageHistoryLoading && !state.pinnedImageHistory.length ? `<div class="pin-history-empty">${escapeHtml(t("screenshotPinHistoryEmpty"))}</div>` : ""}
+    ${historyRows ? `<div class="pin-history-grid">${historyRows}</div>` : ""}
+  `;
 
   return `
     <div class="screenshot-config" data-enabled="${String(plugin.enabled)}">
       <article class="plugin-card" data-plugin-id="screenshot" data-installed="true" data-enabled="${String(plugin.enabled)}">
         <div class="plugin-card-header">
-          <span class="plugin-icon" aria-hidden="true">SHOT</span>
+          ${screenshotIcon}
           <span class="plugin-card-copy">
             <strong>${escapeHtml(t("screenshotPlugin"))}</strong>
             <span>${escapeHtml(t("screenshotPluginDescription"))}</span>
@@ -3276,6 +3544,7 @@ function renderScreenshotPluginManager() {
         ${renderSwitch("shadow", t("screenshotShadow"), t("screenshotShadowDescription"))}
       `)}
       ${renderConfigSection(t("screenshotPinPosition"), "", `<div class="screenshot-choice-row screenshot-choice-row--two">${pinChoices}</div>`)}
+      ${renderConfigSection(t("screenshotPinHistory"), t("screenshotPinHistoryDescription"), historyContent)}
       ${renderConfigSection(t("screenshotGuideLines"), "", renderSwitch("guides", t("screenshotShowGuides"), t("screenshotShowGuidesDescription")))}
     </div>
   `;
@@ -3746,6 +4015,21 @@ function bindRenderedEvents() {
       const toolId = event.target.closest("[data-tool-id]")?.dataset.toolId;
       const current = state.settings.screenshotPlugin.toolShortcuts?.[toolId];
       void updateScreenshotToolShortcut(toolId, { enabled: !current?.enabled });
+      return;
+    }
+
+    if (action === "import-pinned-image") {
+      void importPinnedImageHistory();
+      return;
+    }
+
+    if (action === "delete-pinned-image") {
+      void deletePinnedImageHistory(event.target.closest("[data-pin-id]")?.dataset.pinId);
+      return;
+    }
+
+    if (action === "restore-pinned-image") {
+      void restorePinnedImage(event.target.closest("[data-pin-id]")?.dataset.pinId);
       return;
     }
 

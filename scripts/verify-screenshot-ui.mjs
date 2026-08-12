@@ -73,9 +73,18 @@ window.HTMLCanvasElement.prototype.toDataURL = function toDataURL() {
 window.HTMLCanvasElement.prototype.toBlob = undefined;
 
 const completed = [];
+const screenshotEventListeners = new Map();
 let cancelCount = 0;
 let readyCount = 0;
 let restartCount = 0;
+window.__TAURI__ = {
+  event: {
+    listen: async (eventName, callback) => {
+      screenshotEventListeners.set(eventName, callback);
+      return () => screenshotEventListeners.delete(eventName);
+    },
+  },
+};
 window.gekeScreenshot = {
   getSession: async () => ({
     imageDataUrl: "",
@@ -114,8 +123,8 @@ window.document.body.append(script);
 await settle(window);
 await settle(window);
 
-const stage = window.document.querySelector(".screenshot-stage");
-const selection = window.document.querySelector(".screenshot-selection");
+let stage = window.document.querySelector(".screenshot-stage");
+let selection = window.document.querySelector(".screenshot-selection");
 assert(stage, "screenshot stage should render");
 assert(selection, "selection rectangle should render");
 assert(window.document.querySelector(".screenshot-topbar"), "top size bar should render");
@@ -130,6 +139,21 @@ assert(selection.dataset.visible === "false", "selection should be hidden before
 assert(window.document.querySelector(".screenshot-topbar").dataset.visible === "false", "size bar should be hidden before selecting");
 assert(window.document.querySelector(".screenshot-toolbar").dataset.visible === "false", "toolbar should be hidden before selecting");
 assert(window.document.querySelector('[data-shade="top"]').style.width === "1000px", "the whole screen should be dimmed before selecting");
+
+const screenshotRoot = window.document.querySelector("#screenshot-app");
+const sessionUpdatedListener = screenshotEventListeners.get("screenshot:session-updated");
+assert(sessionUpdatedListener, "screenshot window should listen for session updates");
+screenshotRoot.dataset.finishing = "true";
+sessionUpdatedListener({ payload: {} });
+await settle(window);
+await settle(window);
+assert(screenshotRoot.dataset.finishing !== "true", "new screenshot sessions should clear the finishing opacity state");
+assert(screenshotRoot.dataset.ready === "true", "new screenshot sessions should become visible after clearing the finishing state");
+assert(window.__screenshotTest.getState().selection === null, "new screenshot sessions should still start without a default selection");
+stage = window.document.querySelector(".screenshot-stage");
+selection = window.document.querySelector(".screenshot-selection");
+assert(stage, "screenshot stage should render after a session update");
+assert(selection, "selection rectangle should render after a session update");
 
 window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 50, clientY: 10 }));
 await settle(window);
@@ -184,6 +208,7 @@ assert(window.document.querySelector(".screenshot-stylebar").dataset.visible ===
 assert(!window.document.querySelector('[data-screenshot-action="delay"]'), "disabled delay action should not render");
 assert(!window.document.querySelector('[data-screenshot-action="pin"]'), "disabled pin action should not render");
 assert(!window.document.querySelector('[data-screenshot-action="copy"]'), "disabled copy action should not render");
+assert(!window.document.querySelector('[data-screenshot-action="longshot"]'), "removed long screenshot action should not render");
 assert(window.document.querySelector('[data-screenshot-action="download"]'), "enabled download action should render");
 assert(selection.dataset.rounded === "true", "selection should use rounded corners by default");
 assert(window.document.querySelector(".screenshot-size").textContent.trim() === "640 x 340", "size bar should show pixel dimensions");
@@ -408,5 +433,80 @@ await settle(escapeWindow);
 escapeWindow.dispatchEvent(new escapeWindow.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 await settle(escapeWindow);
 assert(escapeCancelCount === 1, "escape should cancel screenshots even when the configurable cancel action is disabled");
+
+const actionDom = new JSDOM("<!doctype html><html><body><div id=\"screenshot-app\"></div></body></html>", {
+  url: "http://127.0.0.1:5173/screenshot.html",
+  runScripts: "dangerously",
+  pretendToBeVisual: true,
+});
+const { window: actionWindow } = actionDom;
+Object.defineProperty(actionWindow, "innerWidth", { value: 1000, configurable: true });
+Object.defineProperty(actionWindow, "innerHeight", { value: 500, configurable: true });
+actionWindow.HTMLElement.prototype.setPointerCapture = function setPointerCapture() {};
+actionWindow.HTMLCanvasElement.prototype.getContext = window.HTMLCanvasElement.prototype.getContext;
+actionWindow.HTMLCanvasElement.prototype.toDataURL = window.HTMLCanvasElement.prototype.toDataURL;
+actionWindow.HTMLCanvasElement.prototype.toBlob = undefined;
+
+let pinCount = 0;
+let ocrCount = 0;
+let translateCount = 0;
+actionWindow.gekeScreenshot = {
+  getSession: async () => ({
+    imageDataUrl: "",
+    imageWidth: 2000,
+    imageHeight: 1000,
+    settings: {},
+  }),
+  complete: async () => true,
+  pin: async (selection, compositedImageDataUrl) => {
+    pinCount += 1;
+    assert(selection.x === 200 && selection.y === 180, "pin should receive image pixel selection");
+    assert(compositedImageDataUrl === "data:image/png;base64,verified", "pin should receive the composed png data url");
+    return { id: "pin-test" };
+  },
+  ocr: async (imageDataUrl) => {
+    ocrCount += 1;
+    assert(imageDataUrl === "data:image/png;base64,verified", "ocr should receive a composed png data url");
+    return { text: "Hello GEKE" };
+  },
+  translate: async (text) => {
+    translateCount += 1;
+    assert(text === "Hello GEKE", "translate should use the OCR text");
+    return { translatedText: "你好，极刻", targetLanguage: "zh-CN" };
+  },
+  copyText: async () => true,
+  cancel: async () => true,
+  ready: async () => true,
+  restartAfterDelay: async () => true,
+};
+const actionScript = actionWindow.document.createElement("script");
+actionScript.textContent = screenshotSource;
+actionWindow.document.body.append(actionScript);
+await settle(actionWindow);
+const actionStage = actionWindow.document.querySelector(".screenshot-stage");
+actionStage.dispatchEvent(new actionWindow.MouseEvent("pointerdown", { bubbles: true, clientX: 100, clientY: 90 }));
+actionWindow.dispatchEvent(new actionWindow.MouseEvent("pointermove", { bubbles: true, clientX: 330, clientY: 240 }));
+actionWindow.dispatchEvent(new actionWindow.MouseEvent("pointerup", { bubbles: true, clientX: 330, clientY: 240 }));
+await settle(actionWindow);
+assert(actionWindow.document.querySelector('[data-screenshot-action="ocr"]'), "OCR action should render in the screenshot toolbar");
+assert(actionWindow.document.querySelector('[data-screenshot-action="translate"]'), "translate action should render in the screenshot toolbar");
+assert(actionWindow.document.querySelector('[data-screenshot-action="pin"]'), "pin action should render in the screenshot toolbar");
+actionWindow.document.querySelector('[data-screenshot-action="ocr"]').click();
+await settle(actionWindow);
+await delay(20);
+await settle(actionWindow);
+assert(ocrCount === 1, "OCR action should call the OCR bridge once");
+assert(actionWindow.document.querySelector(".screenshot-text-result").dataset.visible === "true", "OCR should show the text result panel");
+assert(actionWindow.document.querySelector(".screenshot-text-result").textContent.includes("Hello GEKE"), "OCR result panel should show recognized text");
+actionWindow.document.querySelector('[data-screenshot-action="translate"]').click();
+await delay(20);
+await settle(actionWindow);
+assert(ocrCount === 2, "translate action should run OCR before translating");
+assert(translateCount === 1, "translate action should call the translate bridge once");
+assert(actionWindow.document.querySelector(".screenshot-text-result").textContent.includes("你好，极刻"), "translation result should show in the text panel");
+actionWindow.document.querySelector('[data-screenshot-action="pin"]').click();
+await delay(20);
+await settle(actionWindow);
+assert(pinCount === 1, "pin action should call the pin bridge once");
 
 console.log("screenshot UI verification passed");

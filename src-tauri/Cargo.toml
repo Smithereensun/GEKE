@@ -14,7 +14,7 @@ core-foundation = "0.10"
 core-graphics = { version = "0.25", features = ["highsierra"] }
 dirs-next = "2"
 icns = "0.4"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 objc2 = { version = "0.6.4", features = ["exception"] }
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSWindow", "NSScreen"] }
 plist = "1"

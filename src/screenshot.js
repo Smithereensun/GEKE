@@ -12,8 +12,8 @@ const TOP_EDGE_SAFE_AREA = 72;
 const SCREEN_EDGE_EPSILON = 1;
 const RECENT_SELECTION_LIMIT = 5;
 const TOOL_ITEMS = [
-  { id: "move", key: "V", icon: "✥", label: "移动" },
-  { id: "note", key: "1", icon: "▱", label: "备注" },
+  { id: "move", key: "V", icon: "↕", label: "移动" },
+  { id: "note", key: "1", icon: "✎", label: "备注" },
   { id: "step", key: "2", icon: "①", label: "步骤" },
   { id: "rectangle", key: "3", icon: "▭", label: "矩形" },
   { id: "circle", key: "4", icon: "○", label: "圆形" },
@@ -25,9 +25,11 @@ const TOOL_ITEMS = [
   { id: "watermark", key: "0", icon: "≈", label: "水印" },
 ];
 const ACTION_ITEMS = [
-  { id: "delay", key: "D", icon: "◷", label: "延迟截图", className: "screenshot-action--secondary" },
+  { id: "ocr", key: "R", icon: "Aa", label: "识字", className: "screenshot-action--secondary" },
+  { id: "translate", key: "T", icon: "中A", label: "翻译", className: "screenshot-action--secondary" },
+  { id: "delay", key: "D", icon: "⏱", label: "延迟截图", className: "screenshot-action--secondary" },
   { id: "pin", key: "P", icon: "⌖", label: "钉图", className: "screenshot-action--secondary" },
-  { id: "download", key: "CmdOrCtrl+S", icon: "⇩", label: "下载", className: "screenshot-action--save" },
+  { id: "download", key: "CmdOrCtrl+S", icon: "↓", label: "下载", className: "screenshot-action--save" },
   { id: "copy", key: "Return", icon: "✓", label: "复制", className: "screenshot-action--done" },
   { id: "cancel", key: "Escape", icon: "×", label: "退出", className: "screenshot-action--danger" },
 ];
@@ -65,6 +67,7 @@ const state = {
   sessionUpdateUnlisten: null,
   status: "",
   busy: false,
+  textResult: null,
   toastTimer: null,
 };
 
@@ -79,6 +82,10 @@ function createTauriBridge() {
     getSession: () => invoke("get_screenshot_session"),
     ready: () => invoke("show_screenshot_window"),
     complete: (selection, action, compositedImageDataUrl = null) => invoke("complete_screenshot_capture", { selection, action, compositedImageDataUrl }),
+    pin: (selection, compositedImageDataUrl = null) => invoke("pin_screenshot_capture", { selection, compositedImageDataUrl }),
+    ocr: (imageDataUrl) => invoke("ocr_screenshot_image", { imageDataUrl }),
+    translate: (text) => invoke("translate_text", { text }),
+    copyText: (text) => invoke("copy_text", { text }),
     restartAfterDelay: (seconds = 3) => invoke("restart_screenshot_capture", { seconds }),
     cancel: () => invoke("cancel_screenshot_capture"),
   };
@@ -96,6 +103,18 @@ function createFallbackBridge() {
     },
     async complete() {
       return { copied: true, savedPath: null };
+    },
+    async pin() {
+      return { id: "pin-fallback" };
+    },
+    async ocr() {
+      return { text: "GEKE OCR" };
+    },
+    async translate(text) {
+      return { sourceText: text, translatedText: `翻译：${text}`, targetLanguage: "zh-CN" };
+    },
+    async copyText() {
+      return true;
     },
     async ready() {
       return true;
@@ -120,6 +139,7 @@ async function initialize() {
 
 async function loadScreenshotSession() {
   appElement.dataset.ready = "false";
+  appElement.dataset.finishing = "false";
   state.session = await bridge.getSession();
   resetCaptureState();
   applySessionSettings();
@@ -149,11 +169,13 @@ function resetCaptureState() {
   state.sampler = null;
   state.status = "";
   state.busy = false;
+  state.textResult = null;
   state.toolStyles = createDefaultToolStyles();
   state.recentSelectionIndex = 0;
 }
 
 async function showSessionError(error) {
+  appElement.dataset.finishing = "false";
   appElement.dataset.ready = "true";
   appElement.innerHTML = `
     <div class="screenshot-error">
@@ -177,6 +199,12 @@ function bindEvents() {
     const action = event.target.closest("[data-screenshot-action]")?.dataset.screenshotAction;
     const tool = event.target.closest("[data-screenshot-tool]")?.dataset.screenshotTool;
     const styleAction = event.target.closest("[data-style-action]")?.dataset.styleAction;
+    const textResultAction = event.target.closest("[data-text-result-action]")?.dataset.textResultAction;
+
+    if (textResultAction) {
+      void handleTextResultAction(textResultAction);
+      return;
+    }
 
     if (tool) {
       const item = TOOL_ITEMS.find((entry) => entry.id === tool);
@@ -315,6 +343,7 @@ function render() {
         </div>
       </div>
       <div class="screenshot-toast" data-visible="false"></div>
+      <div class="screenshot-text-result" data-visible="false"></div>
       <div class="screenshot-inspector" data-visible="false">
         <span class="screenshot-inspector-swatch"></span>
         <strong class="screenshot-inspector-coordinates">0, 0</strong>
@@ -620,7 +649,7 @@ function hideInspector() {
 
 function isFunctionalAreaTarget(target) {
   return Boolean(target?.closest?.(
-    ".screenshot-toolbar, .screenshot-topbar, .screenshot-stylebar, .screenshot-actions, .screenshot-text-editor, .screenshot-toast",
+    ".screenshot-toolbar, .screenshot-topbar, .screenshot-stylebar, .screenshot-actions, .screenshot-text-editor, .screenshot-toast, .screenshot-text-result",
   ));
 }
 
@@ -1496,6 +1525,7 @@ function updateSelectionDom() {
     }
     renderAnnotations();
     renderTextEditor();
+    updateTextResultDom();
     return;
   }
 
@@ -1544,12 +1574,73 @@ function updateSelectionDom() {
   }
   renderAnnotations();
   renderTextEditor();
+  updateTextResultDom();
 }
 
 function placeFloatingElement(element, centerX, top, viewport = viewportSize()) {
   const halfWidth = element.offsetWidth ? element.offsetWidth / 2 : 18;
   element.style.left = `${clamp(centerX, 12 + halfWidth, viewport.width - 12 - halfWidth)}px`;
   element.style.top = `${top}px`;
+}
+
+function updateTextResultDom() {
+  const panel = document.querySelector(".screenshot-text-result");
+  if (!panel) {
+    return;
+  }
+  if (!state.selection || !state.textResult) {
+    panel.dataset.visible = "false";
+    panel.innerHTML = "";
+    return;
+  }
+
+  const result = state.textResult;
+  const text = result.text || "";
+  const translation = result.translation || "";
+  const error = result.error || "";
+  panel.innerHTML = `
+    <div class="screenshot-text-result-header">
+      <strong>${escapeHtml(result.mode === "translate" ? "翻译结果" : "OCR 识别")}</strong>
+      <button type="button" data-text-result-action="close" aria-label="关闭">×</button>
+    </div>
+    ${result.loading ? `<div class="screenshot-text-result-loading">处理中...</div>` : ""}
+    ${error ? `<div class="screenshot-text-result-error">${escapeHtml(error)}</div>` : ""}
+    ${text ? `
+      <section>
+        <div class="screenshot-text-result-title">
+          <span>识别文字</span>
+          <button type="button" data-text-result-action="copy-text">复制</button>
+        </div>
+        <pre>${escapeHtml(text)}</pre>
+      </section>
+    ` : ""}
+    ${translation ? `
+      <section>
+        <div class="screenshot-text-result-title">
+          <span>译文</span>
+          <button type="button" data-text-result-action="copy-translation">复制</button>
+        </div>
+        <pre>${escapeHtml(translation)}</pre>
+      </section>
+    ` : ""}
+  `;
+  panel.dataset.visible = "true";
+  placeTextResultElement(panel);
+}
+
+function placeTextResultElement(panel) {
+  const viewport = viewportSize();
+  const { x, y, width, height } = state.selection;
+  const panelWidth = panel.offsetWidth || 320;
+  const panelHeight = panel.offsetHeight || 220;
+  const rightLeft = x + width + 14;
+  const leftLeft = x - panelWidth - 14;
+  const left = rightLeft + panelWidth <= viewport.width - 12
+    ? rightLeft
+    : Math.max(12, leftLeft);
+  const top = clamp(y, 12, viewport.height - panelHeight - 12);
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
 }
 
 function updateToolDom() {
@@ -1714,6 +1805,14 @@ async function composeSelectionImageDataUrl(pixels = selectionToPixels(), effect
   context.restore();
 
   return canvasToPngDataUrl(canvas);
+}
+
+async function prepareSelectionImageForAction({ forceComposite = false, effectsOverride = null } = {}) {
+  const pixels = selectionToPixels();
+  const effects = effectsOverride || exportEffectsForPixels(pixels);
+  const shouldComposite = forceComposite || state.annotations.length > 0 || effects.rounded || effects.shadow;
+  const compositedImageDataUrl = shouldComposite ? await composeSelectionImageDataUrl(pixels, effects) : null;
+  return { pixels, effects, compositedImageDataUrl };
 }
 
 function canvasToPngDataUrl(canvas) {
@@ -2000,15 +2099,130 @@ async function completeCapture(action) {
   try {
     appElement.dataset.finishing = "true";
     await nextFrame();
-    const pixels = selectionToPixels();
-    const effects = exportEffectsForPixels(pixels);
-    const shouldComposite = state.annotations.length > 0 || effects.rounded || effects.shadow;
-    const compositedImageDataUrl = shouldComposite ? await composeSelectionImageDataUrl(pixels, effects) : null;
+    const { pixels, compositedImageDataUrl } = await prepareSelectionImageForAction();
     await bridge.complete(pixels, action, compositedImageDataUrl);
   } catch (error) {
     state.busy = false;
     appElement.dataset.finishing = "false";
     showToast(getErrorMessage(error, action === "save" ? "保存截图失败。" : "复制截图失败。"), true);
+  }
+}
+
+async function pinCurrentSelection() {
+  if (state.busy) {
+    return;
+  }
+  if (!state.selection) {
+    showToast("请先框选截图区域。", true);
+    return;
+  }
+  commitTextEditor();
+  state.busy = true;
+  showToast("正在钉图...");
+  try {
+    appElement.dataset.finishing = "true";
+    await nextFrame();
+    const { pixels, compositedImageDataUrl } = await prepareSelectionImageForAction();
+    await bridge.pin(pixels, compositedImageDataUrl);
+  } catch (error) {
+    state.busy = false;
+    appElement.dataset.finishing = "false";
+    showToast(getErrorMessage(error, "钉图失败。"), true);
+  }
+}
+
+async function imageDataUrlForTextRecognition() {
+  const { compositedImageDataUrl } = await prepareSelectionImageForAction({
+    forceComposite: true,
+    effectsOverride: { rounded: false, shadow: false, touchesScreenEdge: true },
+  });
+  if (!compositedImageDataUrl) {
+    throw new Error("截图合成失败。");
+  }
+  return compositedImageDataUrl;
+}
+
+async function recognizeCurrentSelection({ translate = false } = {}) {
+  if (state.busy) {
+    return;
+  }
+  if (!state.selection) {
+    showToast("请先框选截图区域。", true);
+    return;
+  }
+  commitTextEditor();
+  state.busy = true;
+  state.textResult = {
+    mode: translate ? "translate" : "ocr",
+    loading: true,
+    text: "",
+    translation: "",
+    error: "",
+  };
+  updateTextResultDom();
+  showToast(translate ? "正在识别并翻译..." : "正在识别文字...");
+  try {
+    const imageDataUrl = await imageDataUrlForTextRecognition();
+    const ocrPayload = await bridge.ocr(imageDataUrl);
+    const text = String(ocrPayload?.text || "").trim();
+    if (!text) {
+      throw new Error("没有识别到文字。");
+    }
+    state.textResult = {
+      mode: translate ? "translate" : "ocr",
+      loading: translate,
+      text,
+      translation: "",
+      error: "",
+    };
+    updateTextResultDom();
+    if (translate) {
+      const translationPayload = await bridge.translate(text);
+      state.textResult = {
+        mode: "translate",
+        loading: false,
+        text,
+        translation: String(translationPayload?.translatedText || translationPayload?.translated_text || "").trim(),
+        error: "",
+      };
+      showToast("翻译完成。");
+    } else {
+      state.textResult.loading = false;
+      showToast("OCR 识别完成。");
+    }
+  } catch (error) {
+    state.textResult = {
+      ...(state.textResult || {}),
+      loading: false,
+      error: getErrorMessage(error, translate ? "翻译失败。" : "OCR 识别失败。"),
+    };
+    showToast(state.textResult.error, true);
+  } finally {
+    state.busy = false;
+    updateTextResultDom();
+  }
+}
+
+async function handleTextResultAction(action) {
+  if (action === "close") {
+    state.textResult = null;
+    updateTextResultDom();
+    return;
+  }
+  if (action === "copy-text") {
+    const text = state.textResult?.text || "";
+    if (text) {
+      await bridge.copyText(text);
+      showToast("识别文字已复制。");
+    }
+    return;
+  }
+  if (action === "copy-translation") {
+    const text = state.textResult?.translation || "";
+    if (text) {
+      await bridge.copyText(text);
+      showToast("译文已复制。");
+    }
   }
 }
 
@@ -2033,7 +2247,15 @@ async function handleScreenshotAction(action) {
     return;
   }
   if (action === "pin") {
-    showToast("请先复制或下载后固定图片。", true);
+    await pinCurrentSelection();
+    return;
+  }
+  if (action === "ocr") {
+    await recognizeCurrentSelection({ translate: false });
+    return;
+  }
+  if (action === "translate") {
+    await recognizeCurrentSelection({ translate: true });
   }
 }
 
@@ -2108,6 +2330,16 @@ function onKeyDown(event) {
     void handleScreenshotAction("pin");
     return;
   }
+  if (eventMatchesConfiguredShortcut(event, "ocr", "R")) {
+    event.preventDefault();
+    void handleScreenshotAction("ocr");
+    return;
+  }
+  if (eventMatchesConfiguredShortcut(event, "translate", "T")) {
+    event.preventDefault();
+    void handleScreenshotAction("translate");
+    return;
+  }
   const tool = visibleToolItems().find((item) => eventMatchesConfiguredShortcut(event, item.id, item.key));
   if (tool) {
     event.preventDefault();
@@ -2163,6 +2395,7 @@ window.__screenshotTest = {
     redoCount: state.redoStack.length,
     recentSelections: state.recentSelections.map((selection) => ({ ...selection })),
     recentSelectionIndex: state.recentSelectionIndex,
+    textResult: state.textResult ? structuredCloneSafe(state.textResult) : null,
     busy: state.busy,
   }),
   selectionToPixels,

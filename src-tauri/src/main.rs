@@ -7,16 +7,14 @@ use std::{
   fs::{self, File},
   io::{BufReader, Cursor},
   path::{Path, PathBuf},
-  process::{Command, Stdio},
+  process::{Command, Output, Stdio},
   str::FromStr,
-  sync::{
-    mpsc, Arc, Mutex,
-  },
+  sync::{mpsc, Arc, Mutex},
   thread,
-  time::{Duration, Instant},
+  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-  WebviewUrl, WebviewWindowBuilder,
+  LogicalSize, WebviewUrl, WebviewWindowBuilder,
   image::Image,
   menu::{Menu, MenuItem, PredefinedMenuItem},
   tray::{TrayIconBuilder, TrayIconEvent},
@@ -43,7 +41,7 @@ use core_graphics::{
 use objc2::MainThreadMarker;
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
+use objc2_app_kit::{NSFloatingWindowLevel, NSScreen, NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 
 const APP_NAME: &str = "极刻 GEKE";
 const DEFAULT_TOGGLE_SHORTCUT: &str = "Alt+Space";
@@ -57,10 +55,16 @@ const DEFAULT_LANGUAGE: &str = "zh-CN";
 const DEFAULT_APPEARANCE_MODE: &str = "system";
 const DEFAULT_ANIMATION_MODE: &str = "smooth";
 const DEFAULT_SCREENSHOT_SHORTCUT: &str = "CmdOrCtrl+Shift+S";
+const DEFAULT_PIN_RESTORE_SHORTCUT: &str = "CmdOrCtrl+Shift+P";
 const DEFAULT_SCREENSHOT_FILE_NAME_FORMAT: &str = "极刻截图_yyyy-MM-dd_HH-mm-ss.png";
 const LEGACY_SCREENSHOT_FILE_NAME_FORMAT: &str = "浮光截图_yyyy-MM-dd_HH-mm-ss.png";
 const DEFAULT_SCREENSHOT_WATERMARK_TEXT: &str = "极刻 GEKE";
 const SEARCH_LIMIT: usize = 40;
+const DEFAULT_PIN_HISTORY_LIMIT: usize = 50;
+const MIN_PIN_HISTORY_LIMIT: usize = 1;
+const MAX_PIN_HISTORY_LIMIT: usize = 200;
+const PIN_MIN_SCALE: f64 = 0.25;
+const PIN_MAX_SCALE: f64 = 3.0;
 
 fn default_prefer_geke_shortcuts() -> bool {
   true
@@ -114,6 +118,12 @@ struct ScreenshotSessionState {
   window_ready: bool,
 }
 
+#[derive(Default)]
+struct PinnedImageState {
+  active: BTreeMap<String, ActivePinnedImage>,
+  restore_cursor: usize,
+}
+
 #[derive(Debug, Clone)]
 struct ScreenshotSession {
   image_path: PathBuf,
@@ -121,6 +131,60 @@ struct ScreenshotSession {
   image_width: u32,
   image_height: u32,
   settings: ScreenshotPluginSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PinnedImageRecord {
+  id: String,
+  path: String,
+  created_at: String,
+  width: u32,
+  height: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ActivePinnedImage {
+  record: PinnedImageRecord,
+  base_width: f64,
+  base_height: f64,
+  scale: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PinnedImagePayload {
+  id: String,
+  image_data_url: String,
+  width: u32,
+  height: u32,
+  scale: f64,
+  created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PinnedImageHistoryPayload {
+  id: String,
+  path: String,
+  image_data_url: String,
+  width: u32,
+  height: u32,
+  created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotTextPayload {
+  text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslationPayload {
+  source_text: String,
+  translated_text: String,
+  target_language: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,7 +328,7 @@ struct ScreenshotSessionPayload {
   settings: ScreenshotPluginSettings,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScreenshotSelection {
   x: u32,
@@ -304,6 +368,7 @@ struct ScreenshotPluginSettings {
   installed: bool,
   enabled: bool,
   shortcut: String,
+  pin_restore_shortcut: String,
   default_tool: String,
   tool_shortcuts: BTreeMap<String, ScreenshotToolShortcut>,
   file_name_format: String,
@@ -320,6 +385,7 @@ struct ScreenshotPluginSettings {
   rounded_corners: bool,
   shadow: bool,
   pin_position: String,
+  pin_history_limit: usize,
   guides: bool,
 }
 
@@ -329,6 +395,7 @@ impl Default for ScreenshotPluginSettings {
       installed: false,
       enabled: true,
       shortcut: DEFAULT_SCREENSHOT_SHORTCUT.to_string(),
+      pin_restore_shortcut: DEFAULT_PIN_RESTORE_SHORTCUT.to_string(),
       default_tool: String::new(),
       tool_shortcuts: default_screenshot_tool_shortcuts(),
       file_name_format: DEFAULT_SCREENSHOT_FILE_NAME_FORMAT.to_string(),
@@ -345,6 +412,7 @@ impl Default for ScreenshotPluginSettings {
       rounded_corners: true,
       shadow: true,
       pin_position: "mouse".to_string(),
+      pin_history_limit: DEFAULT_PIN_HISTORY_LIMIT,
       guides: false,
     }
   }
@@ -439,6 +507,110 @@ fn settings_path() -> PathBuf {
     .join("settings.json")
 }
 
+fn app_data_directory() -> PathBuf {
+  dirs_next::data_dir()
+    .unwrap_or_else(|| dirs_next::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+    .join("极刻 GEKE")
+}
+
+fn pinned_images_directory() -> PathBuf {
+  app_data_directory().join("pinned-images")
+}
+
+fn pinned_image_history_path() -> PathBuf {
+  pinned_images_directory().join("history.json")
+}
+
+fn unique_timestamp_id(prefix: &str) -> String {
+  let millis = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|duration| duration.as_millis())
+    .unwrap_or(0);
+  format!("{prefix}-{millis}-{}", std::process::id())
+}
+
+fn load_pinned_image_history() -> Vec<PinnedImageRecord> {
+  let path = pinned_image_history_path();
+  let Ok(content) = fs::read_to_string(path) else {
+    return Vec::new();
+  };
+  let Ok(records) = serde_json::from_str::<Vec<PinnedImageRecord>>(&content) else {
+    return Vec::new();
+  };
+  records
+    .into_iter()
+    .filter(|record| Path::new(&record.path).is_file())
+    .collect()
+}
+
+fn save_pinned_image_history(records: &[PinnedImageRecord]) -> Result<(), String> {
+  let directory = pinned_images_directory();
+  ensure_directory(&directory)?;
+  let content = serde_json::to_string_pretty(records).map_err(|error| error.to_string())?;
+  fs::write(pinned_image_history_path(), format!("{content}\n")).map_err(|error| error.to_string())
+}
+
+fn pinned_history_limit(limit: usize) -> usize {
+  limit.clamp(MIN_PIN_HISTORY_LIMIT, MAX_PIN_HISTORY_LIMIT)
+}
+
+fn remember_pinned_image(record: PinnedImageRecord, limit: usize) -> Result<Vec<PinnedImageRecord>, String> {
+  let mut records = load_pinned_image_history();
+  records.retain(|item| item.id != record.id && item.path != record.path);
+  records.insert(0, record);
+  records.truncate(pinned_history_limit(limit));
+  save_pinned_image_history(&records)?;
+  Ok(records)
+}
+
+fn pinned_image_history_payload(record: &PinnedImageRecord) -> Result<PinnedImageHistoryPayload, String> {
+  Ok(PinnedImageHistoryPayload {
+    id: record.id.clone(),
+    path: record.path.clone(),
+    image_data_url: png_file_to_data_url(Path::new(&record.path))?,
+    width: record.width,
+    height: record.height,
+    created_at: record.created_at.clone(),
+  })
+}
+
+fn prune_pinned_image_history(limit: usize) -> Result<Vec<PinnedImageRecord>, String> {
+  let mut records = load_pinned_image_history();
+  records.truncate(pinned_history_limit(limit));
+  save_pinned_image_history(&records)?;
+  Ok(records)
+}
+
+fn import_pinned_image_file(path: &Path, limit: usize) -> Result<PinnedImageHistoryPayload, String> {
+  if !path.is_file() {
+    return Err("请选择有效图片文件。".to_string());
+  }
+  let image = image::ImageReader::open(path)
+    .map_err(|error| error.to_string())?
+    .with_guessed_format()
+    .map_err(|error| error.to_string())?
+    .decode()
+    .map_err(|_| "无法读取该图片，请选择 PNG 或 JPG 图片。".to_string())?
+    .to_rgba8();
+  let id = unique_timestamp_id("pinned-image");
+  let output_path = pinned_images_directory().join(format!("{id}.png"));
+  if let Some(parent) = output_path.parent() {
+    ensure_directory(parent)?;
+  }
+  image
+    .save_with_format(&output_path, image::ImageFormat::Png)
+    .map_err(|error| error.to_string())?;
+  let record = PinnedImageRecord {
+    id,
+    path: output_path.to_string_lossy().to_string(),
+    created_at: now_iso(),
+    width: image.width(),
+    height: image.height(),
+  };
+  let _ = remember_pinned_image(record.clone(), limit)?;
+  pinned_image_history_payload(&record)
+}
+
 fn default_screenshot_tool_shortcuts() -> BTreeMap<String, ScreenshotToolShortcut> {
   [
     ("move", "V"),
@@ -481,6 +653,9 @@ fn normalize_screenshot_plugin(plugin: &mut ScreenshotPluginSettings) {
   if plugin.shortcut.trim().is_empty() {
     plugin.shortcut = defaults.shortcut;
   }
+  if plugin.pin_restore_shortcut.trim().is_empty() {
+    plugin.pin_restore_shortcut = defaults.pin_restore_shortcut;
+  }
   plugin.default_tool.clear();
   for (id, shortcut) in defaults.tool_shortcuts {
     let state = plugin.tool_shortcuts.entry(id).or_insert_with(ScreenshotToolShortcut::default);
@@ -503,6 +678,7 @@ fn normalize_screenshot_plugin(plugin: &mut ScreenshotPluginSettings) {
   if !matches!(plugin.pin_position.as_str(), "mouse" | "topRight") {
     plugin.pin_position = "mouse".to_string();
   }
+  plugin.pin_history_limit = pinned_history_limit(plugin.pin_history_limit);
 }
 
 fn normalize_language(language: &str) -> String {
@@ -1326,10 +1502,14 @@ fn start_priority_shortcut_monitor(app: AppHandle, runtime: WakeRuntime) {
           *last_triggered_at = now;
         }
 
-        if screenshot_plugin_is_active(&settings.screenshot_plugin)
-          && event_matches_shortcut(event_type, event, &settings.screenshot_plugin.shortcut)
-        {
-          trigger_screenshot_shortcut(app_for_callback.clone());
+        if screenshot_plugin_is_active(&settings.screenshot_plugin) {
+          if event_matches_shortcut(event_type, event, &settings.screenshot_plugin.pin_restore_shortcut) {
+            trigger_restore_pin_shortcut(app_for_callback.clone());
+          } else if event_matches_shortcut(event_type, event, &settings.screenshot_plugin.shortcut) {
+            trigger_screenshot_shortcut(app_for_callback.clone());
+          } else {
+            toggle_launcher(&app_for_callback);
+          }
         } else {
           toggle_launcher(&app_for_callback);
         }
@@ -1402,6 +1582,9 @@ fn global_shortcuts_for_settings(settings: &LauncherSettings) -> Vec<String> {
   }
   if screenshot_plugin_is_active(&settings.screenshot_plugin) {
     shortcuts.push(settings.screenshot_plugin.shortcut.clone());
+    if !settings.screenshot_plugin.pin_restore_shortcut.trim().is_empty() {
+      shortcuts.push(settings.screenshot_plugin.pin_restore_shortcut.clone());
+    }
   }
   shortcuts
 }
@@ -1466,21 +1649,35 @@ fn trigger_screenshot_shortcut(app: AppHandle) {
   });
 }
 
+fn trigger_restore_pin_shortcut(app: AppHandle) {
+  thread::spawn(move || {
+    if let Err(error) = restore_next_pinned_image(&app) {
+      let _ = app.emit("launcher:screenshot-error", error);
+    }
+  });
+}
+
 fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
   if event.state() != ShortcutState::Pressed {
     return;
   }
 
-  let is_screenshot_shortcut = app
+  let screenshot_plugin = app
     .try_state::<Mutex<LauncherState>>()
-    .and_then(|state| state.lock().ok().map(|state| state.settings.screenshot_plugin.clone()))
-    .is_some_and(|plugin| screenshot_plugin_is_active(&plugin) && shortcut_matches_registered(shortcut, &plugin.shortcut));
+    .and_then(|state| state.lock().ok().map(|state| state.settings.screenshot_plugin.clone()));
 
-  if is_screenshot_shortcut {
-    trigger_screenshot_shortcut(app.clone());
-  } else {
-    toggle_launcher(app);
+  if let Some(plugin) = screenshot_plugin.filter(screenshot_plugin_is_active) {
+    if shortcut_matches_registered(shortcut, &plugin.pin_restore_shortcut) {
+      trigger_restore_pin_shortcut(app.clone());
+      return;
+    }
+    if shortcut_matches_registered(shortcut, &plugin.shortcut) {
+      trigger_screenshot_shortcut(app.clone());
+      return;
+    }
   }
+
+  toggle_launcher(app);
 }
 
 fn menu_copy(language: &str, key: &str) -> &'static str {
@@ -1636,6 +1833,8 @@ fn update_settings(
   normalize_settings(&mut next_settings);
   let app_paths_changed = next_settings.app_search_paths != state.settings.app_search_paths;
   let launch_at_login_changed = next_settings.launch_at_login != state.settings.launch_at_login;
+  let pin_history_limit_changed =
+    next_settings.screenshot_plugin.pin_history_limit != state.settings.screenshot_plugin.pin_history_limit;
   let tray_settings_changed =
     next_settings.menu_icon_visible != state.settings.menu_icon_visible || next_settings.language != state.settings.language;
 
@@ -1660,6 +1859,9 @@ fn update_settings(
   }
 
   save_settings(&next_settings)?;
+  if pin_history_limit_changed {
+    let _ = prune_pinned_image_history(next_settings.screenshot_plugin.pin_history_limit)?;
+  }
   state.settings = next_settings;
   if app_paths_changed {
     state.apps = scan_applications(&valid_search_directories(&state.settings.app_search_paths));
@@ -1864,6 +2066,29 @@ fn run_status_with_timeout(command: &mut Command, failure: &str, timeout: Durati
       } else {
         Err(failure.to_string())
       };
+    }
+
+    if started_at.elapsed() >= timeout {
+      let _ = child.kill();
+      let _ = child.wait();
+      return Err(failure.to_string());
+    }
+
+    thread::sleep(Duration::from_millis(20));
+  }
+}
+
+fn run_output_with_timeout(command: &mut Command, failure: &str, timeout: Duration) -> Result<Output, String> {
+  let mut child = command
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .map_err(|error| error.to_string())?;
+
+  let started_at = Instant::now();
+  loop {
+    if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+      return child.wait_with_output().map_err(|error| error.to_string());
     }
 
     if started_at.elapsed() >= timeout {
@@ -2104,6 +2329,12 @@ mod tests {
     assert!(screenshot_overlay_window_level() > lower_bound);
     assert!(screenshot_overlay_window_level() < upper_bound);
   }
+
+  #[test]
+  fn translation_target_switches_between_chinese_and_english() {
+    assert_eq!(translation_target_for_text("你好，极刻"), "en");
+    assert_eq!(translation_target_for_text("Hello GEKE"), "zh-CN");
+  }
 }
 
 #[tauri::command]
@@ -2121,8 +2352,6 @@ fn run_screenshot_capture(app: &AppHandle, plugin: ScreenshotPluginSettings) -> 
   if !begin_screenshot_start(app)? {
     return Ok(false);
   }
-
-  close_screenshot_window_and_wait(app, Duration::from_millis(700));
 
   if !screen_recording_permission_granted() {
     finish_screenshot_start(app);
@@ -2309,6 +2538,40 @@ fn restore_window_visibility_for_capture(window: &tauri::WebviewWindow) {
 fn restore_window_visibility_for_capture(_window: &tauri::WebviewWindow) {}
 
 #[cfg(target_os = "macos")]
+fn set_screenshot_window_ignores_mouse_events(window: &tauri::WebviewWindow, enabled: bool) {
+  let Ok(ns_window) = window.ns_window() else {
+    return;
+  };
+  if ns_window.is_null() {
+    return;
+  }
+  unsafe {
+    let ns_window = &*(ns_window.cast::<NSWindow>());
+    ns_window.setIgnoresMouseEvents(enabled);
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_screenshot_window_ignores_mouse_events(_window: &tauri::WebviewWindow, _enabled: bool) {}
+
+#[cfg(target_os = "macos")]
+fn set_screenshot_window_alpha(window: &tauri::WebviewWindow, alpha: f64) {
+  let Ok(ns_window) = window.ns_window() else {
+    return;
+  };
+  if ns_window.is_null() {
+    return;
+  }
+  unsafe {
+    let ns_window = &*(ns_window.cast::<NSWindow>());
+    ns_window.setAlphaValue(alpha);
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_screenshot_window_alpha(_window: &tauri::WebviewWindow, _alpha: f64) {}
+
+#[cfg(target_os = "macos")]
 fn enter_screenshot_capture_mode(_app: &AppHandle) -> Result<(), String> {
   Ok(())
 }
@@ -2341,6 +2604,10 @@ fn capture_full_screen_image() -> Result<PathBuf, String> {
 
 fn png_dimensions(path: &Path) -> Result<(u32, u32), String> {
   let bytes = fs::read(path).map_err(|error| error.to_string())?;
+  png_dimensions_from_bytes(&bytes)
+}
+
+fn png_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32), String> {
   if bytes.len() < 24 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
     return Err("截图文件格式不正确。".to_string());
   }
@@ -2352,9 +2619,19 @@ fn png_dimensions(path: &Path) -> Result<(u32, u32), String> {
   Ok((width, height))
 }
 
+fn png_file_to_data_url(path: &Path) -> Result<String, String> {
+  let bytes = fs::read(path).map_err(|error| error.to_string())?;
+  if bytes.len() < 24 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
+    return Err("钉图数据不是有效 PNG。".to_string());
+  }
+  Ok(format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(bytes)))
+}
+
 fn open_screenshot_window(app: &AppHandle) -> Result<bool, String> {
-  if app.get_webview_window("screenshot").is_some() {
-    close_screenshot_window_and_wait(app, Duration::from_millis(700));
+  if let Some(window) = app.get_webview_window("screenshot") {
+    configure_screenshot_window(&window);
+    let _ = window.emit("screenshot:session-updated", ());
+    return Ok(true);
   }
 
   let (x, y, width, height) = screenshot_window_geometry(app);
@@ -2377,24 +2654,11 @@ fn open_screenshot_window(app: &AppHandle) -> Result<bool, String> {
   if let Err(error) = build_result {
     let message = error.to_string();
     if message.contains("already exists") {
-      close_screenshot_window_and_wait(app, Duration::from_millis(900));
-      WebviewWindowBuilder::new(app, "screenshot", WebviewUrl::App("screenshot.html".into()))
-        .title("极刻截图")
-        .position(x, y)
-        .inner_size(width, height)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .visible_on_all_workspaces(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .visible(false)
-        .build()
-        .map(|window| {
-          configure_screenshot_window(&window);
-        })
-        .map_err(|retry_error| retry_error.to_string())?;
-      return Ok(true);
+      if let Some(window) = app.get_webview_window("screenshot") {
+        configure_screenshot_window(&window);
+        let _ = window.emit("screenshot:session-updated", ());
+        return Ok(true);
+      }
     }
     return Err(message);
   }
@@ -2418,6 +2682,9 @@ fn open_screenshot_window_on_main_thread(app: &AppHandle) -> Result<bool, String
 fn configure_screenshot_window(window: &tauri::WebviewWindow) {
   let _ = window.set_always_on_top(true);
   prepare_screenshot_window(window);
+  let _ = window.set_ignore_cursor_events(false);
+  set_screenshot_window_ignores_mouse_events(window, false);
+  set_screenshot_window_alpha(window, 1.0);
   let _ = window.show();
   bring_screenshot_window_front(window);
 }
@@ -2445,7 +2712,6 @@ fn prepare_screenshot_window(window: &tauri::WebviewWindow) {
   }
   unsafe {
     let ns_window = &*(ns_window.cast::<NSWindow>());
-    ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
     ns_window.setOpaque(false);
     ns_window.setHasShadow(false);
     let behavior =
@@ -2527,30 +2793,12 @@ fn screenshot_window_geometry(app: &AppHandle) -> (f64, f64, f64, f64) {
   (0.0, 0.0, 1440.0, 900.0)
 }
 
-fn close_screenshot_window(app: &AppHandle) {
-  if let Some(window) = app.get_webview_window("screenshot") {
-    let _ = window.close();
-  }
-}
-
 fn hide_screenshot_window(app: &AppHandle) {
   if let Some(window) = app.get_webview_window("screenshot") {
+    let _ = window.set_ignore_cursor_events(false);
+    set_screenshot_window_ignores_mouse_events(&window, false);
+    set_screenshot_window_alpha(&window, 1.0);
     let _ = window.hide();
-  }
-}
-
-fn close_screenshot_window_and_wait(app: &AppHandle, timeout: Duration) {
-  if app.get_webview_window("screenshot").is_none() {
-    return;
-  }
-  close_screenshot_window(app);
-
-  let started_at = Instant::now();
-  while started_at.elapsed() < timeout {
-    if app.get_webview_window("screenshot").is_none() {
-      break;
-    }
-    thread::sleep(Duration::from_millis(20));
   }
 }
 
@@ -2571,27 +2819,38 @@ fn get_screenshot_session(state: State<'_, Mutex<ScreenshotSessionState>>) -> Re
 }
 
 fn crop_screenshot_selection(session: &ScreenshotSession, selection: ScreenshotSelection, output_path: &Path) -> Result<(), String> {
-  let x = selection.x.min(session.image_width.saturating_sub(1));
-  let y = selection.y.min(session.image_height.saturating_sub(1));
-  let width = selection.width.min(session.image_width.saturating_sub(x)).max(1);
-  let height = selection.height.min(session.image_height.saturating_sub(y)).max(1);
-  if width < 2 || height < 2 {
-    return Err("截图区域太小。".to_string());
-  }
-
-  let image = image::ImageReader::open(&session.image_path)
-    .map_err(|error| error.to_string())?
-    .with_guessed_format()
-    .map_err(|error| error.to_string())?
-    .decode()
-    .map_err(|error| error.to_string())?;
-  let cropped = image.crop_imm(x, y, width, height);
+  let cropped = crop_screenshot_selection_to_image(session, &session.image_path, selection)?;
   if let Some(parent) = output_path.parent() {
     ensure_directory(parent)?;
   }
   cropped
     .save_with_format(output_path, image::ImageFormat::Png)
     .map_err(|error| error.to_string())
+}
+
+fn crop_screenshot_selection_to_image(
+  session: &ScreenshotSession,
+  image_path: &Path,
+  selection: ScreenshotSelection,
+) -> Result<image::RgbaImage, String> {
+  let image = image::ImageReader::open(image_path)
+    .map_err(|error| error.to_string())?
+    .with_guessed_format()
+    .map_err(|error| error.to_string())?
+    .decode()
+    .map_err(|error| error.to_string())?
+    .to_rgba8();
+  let image_width = image.width().min(session.image_width);
+  let image_height = image.height().min(session.image_height);
+  let x = selection.x.min(session.image_width.saturating_sub(1));
+  let y = selection.y.min(session.image_height.saturating_sub(1));
+  let width = selection.width.min(image_width.saturating_sub(x)).max(1);
+  let height = selection.height.min(image_height.saturating_sub(y)).max(1);
+  if width < 2 || height < 2 {
+    return Err("截图区域太小。".to_string());
+  }
+
+  Ok(image::imageops::crop_imm(&image, x, y, width, height).to_image())
 }
 
 fn copy_image_to_clipboard(path: &Path) -> Result<(), String> {
@@ -2627,6 +2886,678 @@ fn write_data_url_png(data_url: &str, output_path: &Path) -> Result<(), String> 
     ensure_directory(parent)?;
   }
   fs::write(output_path, bytes).map_err(|error| error.to_string())
+}
+
+fn write_pinned_data_url_png(data_url: &str, output_path: &Path) -> Result<(u32, u32), String> {
+  let payload = data_url
+    .strip_prefix("data:image/png;base64,")
+    .ok_or_else(|| "钉图数据格式不正确。".to_string())?;
+  let bytes = general_purpose::STANDARD
+    .decode(payload)
+    .map_err(|_| "钉图数据无法解析。".to_string())?;
+  let dimensions = png_dimensions_from_bytes(&bytes)?;
+  if let Some(parent) = output_path.parent() {
+    ensure_directory(parent)?;
+  }
+  fs::write(output_path, bytes).map_err(|error| error.to_string())?;
+  Ok(dimensions)
+}
+
+fn monitor_geometry_for_pin(app: &AppHandle) -> (f64, f64, f64, f64, f64) {
+  let monitor = app.get_webview_window("main").and_then(|window| {
+    window
+      .current_monitor()
+      .ok()
+      .flatten()
+      .or_else(|| window.primary_monitor().ok().flatten())
+  });
+  if let Some(monitor) = monitor {
+    let scale = monitor.scale_factor().max(1.0);
+    let position = monitor.position();
+    let size = monitor.size();
+    return (
+      position.x as f64 / scale,
+      position.y as f64 / scale,
+      size.width as f64 / scale,
+      size.height as f64 / scale,
+      scale,
+    );
+  }
+  (0.0, 0.0, 1440.0, 900.0, 1.0)
+}
+
+fn pin_base_size(record: &PinnedImageRecord, screen_width: f64, screen_height: f64, scale: f64) -> (f64, f64) {
+  let logical_width = (record.width as f64 / scale.max(1.0)).max(80.0);
+  let logical_height = (record.height as f64 / scale.max(1.0)).max(60.0);
+  let fit_scale = (screen_width * 0.72 / logical_width)
+    .min(screen_height * 0.72 / logical_height)
+    .min(1.0)
+    .max(0.18);
+  (logical_width * fit_scale, logical_height * fit_scale)
+}
+
+fn pin_window_position(
+  app: &AppHandle,
+  base_width: f64,
+  base_height: f64,
+  selection: Option<ScreenshotSelection>,
+  session: Option<&ScreenshotSession>,
+  pin_position: &str,
+) -> (f64, f64) {
+  let (screen_x, screen_y, screen_width, screen_height, monitor_scale) = monitor_geometry_for_pin(app);
+  let image_scale = session
+    .map(|session| {
+      let (_, _, screenshot_width, screenshot_height) = screenshot_window_geometry(app);
+      let scale_x = session.image_width as f64 / screenshot_width.max(1.0);
+      let scale_y = session.image_height as f64 / screenshot_height.max(1.0);
+      scale_x.max(scale_y).max(1.0)
+    })
+    .unwrap_or(monitor_scale);
+  let max_x = screen_x + screen_width - base_width - 16.0;
+  let max_y = screen_y + screen_height - base_height - 16.0;
+
+  if pin_position == "mouse" {
+    if let Some(selection) = selection {
+      let x = screen_x + selection.x as f64 / image_scale;
+      let y = screen_y + selection.y as f64 / image_scale;
+      return (x.clamp(screen_x + 12.0, max_x.max(screen_x + 12.0)), y.clamp(screen_y + 36.0, max_y.max(screen_y + 36.0)));
+    }
+  }
+
+  let horizontal_offset = ((load_pinned_image_history().len().min(6) as f64) * 18.0).round();
+  (
+    (screen_x + screen_width - base_width - 28.0 - horizontal_offset).clamp(screen_x + 12.0, max_x.max(screen_x + 12.0)),
+    (screen_y + 56.0 + horizontal_offset).clamp(screen_y + 36.0, max_y.max(screen_y + 36.0)),
+  )
+}
+
+fn pinned_image_payload(pin_id: &str, active: &ActivePinnedImage) -> Result<PinnedImagePayload, String> {
+  Ok(PinnedImagePayload {
+    id: pin_id.to_string(),
+    image_data_url: png_file_to_data_url(Path::new(&active.record.path))?,
+    width: active.record.width,
+    height: active.record.height,
+    scale: active.scale,
+    created_at: active.record.created_at.clone(),
+  })
+}
+
+fn open_pinned_image_window(
+  app: &AppHandle,
+  pin_state: &Mutex<PinnedImageState>,
+  record: PinnedImageRecord,
+  selection: Option<ScreenshotSelection>,
+  session: Option<&ScreenshotSession>,
+  pin_position: &str,
+) -> Result<PinnedImagePayload, String> {
+  let (_, _, screen_width, screen_height, monitor_scale) = monitor_geometry_for_pin(app);
+  let (base_width, base_height) = pin_base_size(&record, screen_width, screen_height, monitor_scale);
+  let window_id = unique_timestamp_id("pin");
+  let (x, y) = pin_window_position(app, base_width, base_height, selection, session, pin_position);
+
+  let active = ActivePinnedImage {
+    record: record.clone(),
+    base_width,
+    base_height,
+    scale: 1.0,
+  };
+  {
+    let mut pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+    pin_state.active.insert(window_id.clone(), active.clone());
+  }
+
+  let url = WebviewUrl::App(format!("pin.html?pinId={window_id}").into());
+  let (sender, receiver) = mpsc::channel();
+  let app_for_window = app.clone();
+  let window_id_for_window = window_id.clone();
+  app
+    .run_on_main_thread(move || {
+      let result = WebviewWindowBuilder::new(&app_for_window, window_id_for_window.clone(), url)
+        .title("极刻钉图")
+        .position(x, y)
+        .inner_size(base_width, base_height)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .resizable(true)
+        .visible(false)
+        .build()
+        .map(|window| {
+          configure_pin_window(&window);
+          let _ = window.show();
+          let _ = window.set_focus();
+        })
+        .map_err(|error| error.to_string());
+      let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+
+  let build_result = receiver
+    .recv_timeout(Duration::from_secs(4))
+    .map_err(|error| format!("打开钉图窗口超时：{error}"))?;
+  if let Err(error) = build_result {
+    if let Ok(mut pin_state) = pin_state.lock() {
+      pin_state.active.remove(&window_id);
+    }
+    return Err(error);
+  }
+
+  pinned_image_payload(&window_id, &active)
+}
+
+fn configure_pin_window(window: &tauri::WebviewWindow) {
+  let _ = window.set_always_on_top(true);
+  prepare_pin_window(window);
+  bring_pin_window_front(window);
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_pin_window(window: &tauri::WebviewWindow) {
+  let Ok(ns_window) = window.ns_window() else {
+    return;
+  };
+  if ns_window.is_null() {
+    return;
+  }
+  unsafe {
+    let ns_window = &*(ns_window.cast::<NSWindow>());
+    ns_window.setOpaque(false);
+    ns_window.setHasShadow(true);
+    let behavior =
+      NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
+        | NSWindowCollectionBehavior::Stationary;
+    ns_window.setCollectionBehavior(behavior);
+    ns_window.setLevel(NSFloatingWindowLevel);
+    ns_window.setMovable(true);
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prepare_pin_window(_window: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "macos")]
+fn bring_pin_window_front(window: &tauri::WebviewWindow) {
+  let Ok(ns_window) = window.ns_window() else {
+    return;
+  };
+  if ns_window.is_null() {
+    return;
+  }
+  unsafe {
+    let ns_window = &*(ns_window.cast::<NSWindow>());
+    ns_window.orderFrontRegardless();
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bring_pin_window_front(_window: &tauri::WebviewWindow) {}
+
+#[tauri::command]
+fn get_pinned_image(
+  pin_id: String,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+) -> Result<PinnedImagePayload, String> {
+  let pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+  let active = pin_state
+    .active
+    .get(&pin_id)
+    .ok_or_else(|| "钉图窗口不存在。".to_string())?;
+  pinned_image_payload(&pin_id, active)
+}
+
+#[tauri::command]
+fn resize_pinned_image(
+  app: AppHandle,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+  pin_id: String,
+  scale: f64,
+) -> Result<PinnedImagePayload, String> {
+  let scale = scale.clamp(PIN_MIN_SCALE, PIN_MAX_SCALE);
+  let payload = {
+    let mut pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+    let active = pin_state
+      .active
+      .get_mut(&pin_id)
+      .ok_or_else(|| "钉图窗口不存在。".to_string())?;
+    active.scale = scale;
+    pinned_image_payload(&pin_id, active)?
+  };
+  if let Some(active) = app
+    .try_state::<Mutex<PinnedImageState>>()
+    .and_then(|pin_state| pin_state.lock().ok().and_then(|pin_state| pin_state.active.get(&pin_id).cloned()))
+  {
+    let app_for_window = app.clone();
+    let pin_id_for_window = pin_id.clone();
+    let (sender, receiver) = mpsc::channel();
+    app
+      .run_on_main_thread(move || {
+        if let Some(window) = app_for_window.get_webview_window(&pin_id_for_window) {
+          let _ = window.set_size(tauri::Size::Logical(LogicalSize::new(
+            active.base_width * active.scale,
+            active.base_height * active.scale,
+          )));
+          configure_pin_window(&window);
+        }
+        let _ = sender.send(());
+      })
+      .map_err(|error| error.to_string())?;
+    let _ = receiver.recv_timeout(Duration::from_millis(700));
+  }
+  Ok(payload)
+}
+
+#[tauri::command]
+fn close_pinned_image(
+  app: AppHandle,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+  pin_id: String,
+) -> Result<bool, String> {
+  let app_for_window = app.clone();
+  let pin_id_for_window = pin_id.clone();
+  let (sender, receiver) = mpsc::channel();
+  app
+    .run_on_main_thread(move || {
+      if let Some(window) = app_for_window.get_webview_window(&pin_id_for_window) {
+        let _ = window.close();
+      }
+      let _ = sender.send(());
+    })
+    .map_err(|error| error.to_string())?;
+  let _ = receiver.recv_timeout(Duration::from_millis(700));
+  let mut pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+  pin_state.active.remove(&pin_id);
+  Ok(true)
+}
+
+#[tauri::command]
+fn start_pin_drag(window: tauri::WebviewWindow) -> Result<bool, String> {
+  let app = window.app_handle().clone();
+  let app_for_window = app.clone();
+  let label = window.label().to_string();
+  let (sender, receiver) = mpsc::channel();
+  app
+    .run_on_main_thread(move || {
+      let result = app_for_window
+        .get_webview_window(&label)
+        .map(|window| window.start_dragging().map_err(|error| error.to_string()))
+        .unwrap_or_else(|| Err("钉图窗口不存在。".to_string()));
+      let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+  receiver
+    .recv_timeout(Duration::from_millis(700))
+    .map_err(|error| format!("开始拖动钉图超时：{error}"))??;
+  Ok(true)
+}
+
+fn restore_next_pinned_image(app: &AppHandle) -> Result<PinnedImagePayload, String> {
+  let Some(pin_state) = app.try_state::<Mutex<PinnedImageState>>() else {
+    return Err("钉图状态不可用。".to_string());
+  };
+  let records = load_pinned_image_history();
+  if records.is_empty() {
+    return Err("还没有钉图记录。".to_string());
+  }
+  let record = {
+    let mut pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+    let index = pin_state.restore_cursor % records.len();
+    pin_state.restore_cursor = (pin_state.restore_cursor + 1) % records.len();
+    records[index].clone()
+  };
+  open_pinned_image_window(app, &pin_state, record, None, None, "topRight")
+}
+
+#[tauri::command]
+fn restore_recent_pinned_image(app: AppHandle) -> Result<PinnedImagePayload, String> {
+  restore_next_pinned_image(&app)
+}
+
+#[tauri::command]
+fn list_pinned_image_history() -> Result<Vec<PinnedImageHistoryPayload>, String> {
+  load_pinned_image_history()
+    .iter()
+    .map(pinned_image_history_payload)
+    .collect()
+}
+
+#[tauri::command]
+fn delete_pinned_image_history(pin_id: String) -> Result<Vec<PinnedImageHistoryPayload>, String> {
+  let mut removed_path = None;
+  let mut records = load_pinned_image_history()
+    .into_iter()
+    .filter(|record| {
+      if record.id == pin_id {
+        removed_path = Some(record.path.clone());
+        false
+      } else {
+        true
+      }
+    })
+    .collect::<Vec<_>>();
+  save_pinned_image_history(&records)?;
+  if let Some(path) = removed_path {
+    let _ = fs::remove_file(path);
+  }
+  records.retain(|record| Path::new(&record.path).is_file());
+  records.iter().map(pinned_image_history_payload).collect()
+}
+
+#[tauri::command]
+async fn import_pinned_image_history(
+  app: AppHandle,
+  state: State<'_, Mutex<LauncherState>>,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+) -> Result<Option<PinnedImageHistoryPayload>, String> {
+  let Some(path) = app
+    .dialog()
+    .file()
+    .set_title("添加钉图历史图片")
+    .add_filter("Image", &["png", "jpg", "jpeg"])
+    .blocking_pick_file()
+  else {
+    return Ok(None);
+  };
+  let path = path.into_path().map_err(|error| error.to_string())?;
+  let limit = {
+    let state = state.lock().map_err(|error| error.to_string())?;
+    state.settings.screenshot_plugin.pin_history_limit
+  };
+  let payload = import_pinned_image_file(&path, limit)?;
+  if let Ok(mut pin_state) = pin_state.lock() {
+    pin_state.restore_cursor = 0;
+  }
+  Ok(Some(payload))
+}
+
+#[tauri::command]
+fn restore_pinned_image(
+  app: AppHandle,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+  pin_id: String,
+) -> Result<PinnedImagePayload, String> {
+  let record = load_pinned_image_history()
+    .into_iter()
+    .find(|record| record.id == pin_id)
+    .ok_or_else(|| "钉图历史不存在。".to_string())?;
+  open_pinned_image_window(&app, &pin_state, record, None, None, "topRight")
+}
+
+#[tauri::command]
+async fn pin_screenshot_capture(
+  app: AppHandle,
+  state: State<'_, Mutex<ScreenshotSessionState>>,
+  pin_state: State<'_, Mutex<PinnedImageState>>,
+  selection: ScreenshotSelection,
+  composited_image_data_url: Option<String>,
+) -> Result<PinnedImagePayload, String> {
+  let session = state
+    .lock()
+    .map_err(|error| error.to_string())?
+    .current
+    .clone()
+    .ok_or_else(|| "截图会话不存在。".to_string())?;
+  let id = unique_timestamp_id("pinned-image");
+  let output_path = pinned_images_directory().join(format!("{id}.png"));
+  let (width, height) = if let Some(data_url) = composited_image_data_url.as_deref().filter(|value| !value.is_empty()) {
+    write_pinned_data_url_png(data_url, &output_path)?
+  } else {
+    crop_screenshot_selection(&session, selection, &output_path)?;
+    png_dimensions(&output_path)?
+  };
+  let record = PinnedImageRecord {
+    id,
+    path: output_path.to_string_lossy().to_string(),
+    created_at: now_iso(),
+    width,
+    height,
+  };
+  let _ = remember_pinned_image(record.clone(), session.settings.pin_history_limit)?;
+  {
+    let mut pin_state = pin_state.lock().map_err(|error| error.to_string())?;
+    pin_state.restore_cursor = 0;
+  }
+  let payload = open_pinned_image_window(
+    &app,
+    &pin_state,
+    record,
+    Some(selection),
+    Some(&session),
+    &session.settings.pin_position,
+  )?;
+
+  {
+    let mut state = state.lock().map_err(|error| error.to_string())?;
+    state.current = None;
+    state.starting = false;
+    state.window_ready = false;
+  }
+  hide_screenshot_window(&app);
+  exit_screenshot_capture_mode(&app);
+
+  Ok(payload)
+}
+
+fn temporary_png_from_data_url(prefix: &str, data_url: &str) -> Result<PathBuf, String> {
+  let path = std::env::temp_dir().join(format!("{}-{}.png", prefix, unique_timestamp_id("image")));
+  write_pinned_data_url_png(data_url, &path)?;
+  Ok(path)
+}
+
+fn run_macos_vision_ocr(image_path: &Path) -> Result<String, String> {
+  let path_json = serde_json::to_string(&image_path.to_string_lossy().to_string()).map_err(|error| error.to_string())?;
+  let script = format!(
+    r#"
+ObjC.import('Foundation')
+ObjC.import('Vision')
+var path = {path_json}
+var url = $.NSURL.fileURLWithPath(path)
+var request = $.VNRecognizeTextRequest.alloc.init
+request.setRecognitionLevel(0)
+request.setUsesLanguageCorrection(true)
+var preferredLanguages = ['zh-Hans', 'en-US']
+var selectedLanguages = preferredLanguages
+try {{
+  var supportedLanguages = request.supportedRecognitionLanguagesAndReturnError(null)
+  var supported = {{}}
+  for (var i = 0; i < supportedLanguages.count; i++) {{
+    supported[ObjC.unwrap(supportedLanguages.objectAtIndex(i))] = true
+  }}
+  selectedLanguages = preferredLanguages.filter(function(language) {{
+    return supported[language]
+  }})
+  if (selectedLanguages.length === 0) {{
+    selectedLanguages = preferredLanguages
+  }}
+}} catch (_) {{}}
+try {{
+  request.setRecognitionLanguages($(selectedLanguages))
+}} catch (_) {{}}
+var handler = $.VNImageRequestHandler.alloc.initWithURLOptions(url, $({{}}))
+var ok = handler.performRequestsError($([request]), null)
+if (!ok) {{
+  throw new Error('Vision OCR failed')
+}}
+var results = request.results
+var lines = []
+for (var i = 0; i < results.count; i++) {{
+  var observation = results.objectAtIndex(i)
+  var candidate = observation.topCandidates(1).firstObject
+  if (candidate) {{
+    var text = ObjC.unwrap(candidate.string)
+    if (text) {{
+      lines.push(text)
+    }}
+  }}
+}}
+JSON.stringify(lines)
+"#
+  );
+
+  let output = run_output_with_timeout(
+    Command::new("/usr/bin/osascript").arg("-l").arg("JavaScript").arg("-e").arg(script),
+    "OCR 识别超时。".to_string().as_str(),
+    Duration::from_secs(18),
+  )?;
+  if !output.status.success() {
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(if error.is_empty() { "OCR 识别失败。".to_string() } else { error });
+  }
+
+  let lines = serde_json::from_slice::<Vec<String>>(&output.stdout)
+    .map_err(|_| "OCR 结果解析失败。".to_string())?;
+  Ok(lines
+    .into_iter()
+    .map(|line| line.trim().to_string())
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n"))
+}
+
+#[tauri::command]
+fn ocr_screenshot_image(image_data_url: String) -> Result<ScreenshotTextPayload, String> {
+  let image_path = temporary_png_from_data_url("geke-ocr", &image_data_url)?;
+  let result = run_macos_vision_ocr(&image_path);
+  let _ = fs::remove_file(image_path);
+  let text = result?;
+  if text.trim().is_empty() {
+    return Err("没有识别到文字。".to_string());
+  }
+  Ok(ScreenshotTextPayload { text })
+}
+
+fn text_contains_cjk(text: &str) -> bool {
+  text.chars().any(|character| {
+    matches!(
+      character as u32,
+      0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff
+    )
+  })
+}
+
+fn translation_target_for_text(text: &str) -> &'static str {
+  if text_contains_cjk(text) {
+    "en"
+  } else {
+    "zh-CN"
+  }
+}
+
+fn parse_google_translate_payload(bytes: &[u8]) -> Result<String, String> {
+  let value = serde_json::from_slice::<serde_json::Value>(bytes).map_err(|_| "翻译结果解析失败。".to_string())?;
+  let segments = value
+    .get(0)
+    .and_then(|value| value.as_array())
+    .ok_or_else(|| "翻译结果为空。".to_string())?;
+  let translated = segments
+    .iter()
+    .filter_map(|segment| segment.get(0).and_then(|value| value.as_str()))
+    .collect::<Vec<_>>()
+    .join("");
+  if translated.trim().is_empty() {
+    Err("翻译结果为空。".to_string())
+  } else {
+    Ok(translated)
+  }
+}
+
+fn parse_mymemory_translate_payload(bytes: &[u8]) -> Result<String, String> {
+  let value = serde_json::from_slice::<serde_json::Value>(bytes).map_err(|_| "备用翻译结果解析失败。".to_string())?;
+  let translated = value
+    .get("responseData")
+    .and_then(|value| value.get("translatedText"))
+    .and_then(|value| value.as_str())
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+  if translated.is_empty() {
+    Err("备用翻译结果为空。".to_string())
+  } else {
+    Ok(translated)
+  }
+}
+
+fn translate_with_google(source_text: &str, target_language: &str) -> Result<String, String> {
+  let output = run_output_with_timeout(
+    Command::new("/usr/bin/curl")
+      .arg("-sS")
+      .arg("--get")
+      .arg("--connect-timeout")
+      .arg("4")
+      .arg("--max-time")
+      .arg("8")
+      .arg("--data-urlencode")
+      .arg("client=gtx")
+      .arg("--data-urlencode")
+      .arg("sl=auto")
+      .arg("--data-urlencode")
+      .arg(format!("tl={target_language}"))
+      .arg("--data-urlencode")
+      .arg("dt=t")
+      .arg("--data-urlencode")
+      .arg(format!("q={source_text}"))
+      .arg("https://translate.googleapis.com/translate_a/single"),
+    "翻译请求超时。",
+    Duration::from_secs(9),
+  )?;
+  if !output.status.success() {
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(if error.is_empty() { "翻译失败，请检查网络。".to_string() } else { error });
+  }
+  parse_google_translate_payload(&output.stdout)
+}
+
+fn translate_with_mymemory(source_text: &str, target_language: &str) -> Result<String, String> {
+  let langpair = if target_language == "en" {
+    "zh-CN|en"
+  } else {
+    "en|zh-CN"
+  };
+  let output = run_output_with_timeout(
+    Command::new("/usr/bin/curl")
+      .arg("-sS")
+      .arg("--get")
+      .arg("--connect-timeout")
+      .arg("4")
+      .arg("--max-time")
+      .arg("8")
+      .arg("--data-urlencode")
+      .arg(format!("q={source_text}"))
+      .arg("--data-urlencode")
+      .arg(format!("langpair={langpair}"))
+      .arg("https://api.mymemory.translated.net/get"),
+    "备用翻译请求超时。",
+    Duration::from_secs(9),
+  )?;
+  if !output.status.success() {
+    let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    return Err(if error.is_empty() { "备用翻译失败，请检查网络。".to_string() } else { error });
+  }
+  parse_mymemory_translate_payload(&output.stdout)
+}
+
+#[tauri::command]
+fn translate_text(text: String) -> Result<TranslationPayload, String> {
+  let source_text = text.trim().to_string();
+  if source_text.is_empty() {
+    return Err("没有可翻译的文字。".to_string());
+  }
+  let target_language = translation_target_for_text(&source_text).to_string();
+  let translated_text = translate_with_google(&source_text, &target_language)
+    .or_else(|_| translate_with_mymemory(&source_text, &target_language))?;
+  Ok(TranslationPayload {
+    source_text,
+    translated_text,
+    target_language,
+  })
+}
+
+#[tauri::command]
+fn copy_text(text: String) -> Result<bool, String> {
+  copy_text_to_clipboard(&text)?;
+  Ok(true)
 }
 
 #[tauri::command]
@@ -2873,6 +3804,7 @@ fn main() {
     .manage(wake_runtime.clone())
     .manage(Mutex::new(LauncherState::default()))
     .manage(Mutex::new(ScreenshotSessionState::default()))
+    .manage(Mutex::new(PinnedImageState::default()))
     .invoke_handler(tauri::generate_handler![
       get_initial_apps,
       search_applications,
@@ -2893,6 +3825,19 @@ fn main() {
       get_screenshot_session,
       show_screenshot_window,
       complete_screenshot_capture,
+      pin_screenshot_capture,
+      get_pinned_image,
+      resize_pinned_image,
+      close_pinned_image,
+      start_pin_drag,
+      restore_recent_pinned_image,
+      list_pinned_image_history,
+      delete_pinned_image_history,
+      import_pinned_image_history,
+      restore_pinned_image,
+      ocr_screenshot_image,
+      translate_text,
+      copy_text,
       cancel_screenshot_capture,
       restart_screenshot_capture,
     ])

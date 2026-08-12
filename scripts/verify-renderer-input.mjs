@@ -51,6 +51,7 @@ const fileSearchQueries = [];
 let launchCount = 0;
 let openFileCount = 0;
 let runScreenshotPluginCount = 0;
+let restoreRecentPinnedImageCount = 0;
 let hideCount = 0;
 let scrollIntoViewCount = 0;
 let selectSearchPathCount = 0;
@@ -103,6 +104,10 @@ window.geke = {
   },
   runScreenshotPlugin: async () => {
     runScreenshotPluginCount += 1;
+    return true;
+  },
+  restoreRecentPinnedImage: async () => {
+    restoreRecentPinnedImageCount += 1;
     return true;
   },
   selectSearchPaths: async () => {
@@ -653,6 +658,7 @@ await nextFrame(window);
 assert(!window.document.querySelector('[data-wake-target="searchAppsShortcut"]'), "shortcut groups should collapse");
 assert(window.document.querySelector('[data-shortcut-group="screenshot"]'), "screenshot shortcut group should always appear in the shortcut guide");
 assert(window.document.querySelector('[data-action="record-shortcut"][data-wake-target="screenshotPluginShortcut"]'), "screenshot shortcut should be editable in the shortcut guide");
+assert(window.document.querySelector('[data-action="record-shortcut"][data-wake-target="screenshotPinRestoreShortcut"]'), "restore pinned image shortcut should be editable in the shortcut guide");
 
 window.document.querySelector('[data-action="set-settings-section"][data-settings-section-target="plugins"]').click();
 await nextFrame(window);
@@ -697,6 +703,7 @@ window.document.querySelector('[data-action="set-settings-section"][data-setting
 await nextFrame(window);
 
 assert(window.document.querySelector('[data-shortcut-group="screenshot"]'), "installed screenshot shortcuts should appear in the shortcut guide");
+assert(window.document.querySelector('[data-wake-target="screenshotPinRestoreShortcut"]')?.textContent.includes("Command + Shift + P"), "restore pinned image shortcut should show the default shortcut");
 
 window.document.querySelector('[data-action="record-shortcut"][data-wake-target="screenshotPluginShortcut"]').click();
 await nextFrame(window);
@@ -714,6 +721,23 @@ await Promise.resolve();
 await nextFrame(window);
 
 assert(settingsUpdates.at(-1)?.screenshotPlugin?.shortcut === "Alt+8", "screenshot shortcut should be editable from the shortcut guide");
+
+window.document.querySelector('[data-action="record-shortcut"][data-wake-target="screenshotPinRestoreShortcut"]').click();
+await nextFrame(window);
+window.dispatchEvent(
+  new window.KeyboardEvent("keydown", {
+    key: "9",
+    code: "Digit9",
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+  }),
+);
+await Promise.resolve();
+await Promise.resolve();
+await nextFrame(window);
+
+assert(settingsUpdates.at(-1)?.screenshotPlugin?.pinRestoreShortcut === "Alt+9", "restore pinned image shortcut should be editable from the shortcut guide");
 
 const updatesBeforePluginConflict = settingsUpdates.length;
 window.document.querySelector('[data-action="record-shortcut"][data-wake-target="screenshotPluginShortcut"]').click();
@@ -777,6 +801,20 @@ await nextFrame(window);
 
 assert(runScreenshotPluginCount === 1, "enter should run the selected screenshot command");
 assert(hideCount === 2, "running the screenshot command should keep the launcher visible");
+
+window.dispatchEvent(
+  new window.KeyboardEvent("keydown", {
+    key: "9",
+    code: "Digit9",
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+  }),
+);
+await Promise.resolve();
+await nextFrame(window);
+
+assert(restoreRecentPinnedImageCount === 1, "restore pinned image shortcut should call the restore command");
 
 resolveInitialApps(createPayload(""));
 await nextFrame(window);
